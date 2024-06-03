@@ -1,0 +1,587 @@
+---
+title: "Exploring rsfMRI Signatures of OCS Using Big Data and Machine Learning"
+author: "Tracey Shi"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_float: no
+  github_document:
+    toc: yes
+  html_notebook:
+    df_print: paged
+    highlight: tango
+    number_sections: yes
+    theme: spacelab
+    toc: yes
+    toc_float: no
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    fig_width: 3
+    fig_height: 2.75
+    fig_caption: true
+---
+
+# Setup
+
+```{r}
+workdir <- '/Users/marshlab2/Desktop/OCS_bigdata_ML_local'
+
+```
+
+# Data
+
+Data is used from the Adolescent Brain Cognitive Development (ABCD) study.
+
+## ABCD Data
+
+ABCD release 4.0 on NDA (https://dx.doi.org/10.15154/1523041). Accessed 2022.01.13:
+
+* abcd_betnet02.txt
+* abcd_cbcl01.txt
+* abcd_lt01.txt
+* abcd_mri01.txt
+* abcd_imgincl01.txt
+* abcd_ksads01.txt
+
+Baseline ABCD neuroimaging data preprocessed through DCAN-ABCD pipeline from DCAN-Lab, collection 3165 on NDA (https://nda.nih.gov/edit_collection.html?id=3165):
+
+* Follow download instructions on Github page (https://github.com/DCAN-Labs/nda-abcd-s3-downloader) - use this Python application to download the actual connectivity matrices 
+* participants.tsv (part of Collection Documents on NDA; accessed 2021.04.27)
+
+## Inclusion criteria for discovery and test datasets (from ABCD study)
+
+Eligible participants:
+
+* abcd_imgincl01 file, "rsfmri include" == 1
+* Have 10min pconn.nii file in data collection 3165 from DCANlab
+
+Combined criteria for inclusion:
+
+* Completed T1 and rsfmri scans, passed QA
+* No significant anatomical findings
+* At least 10min of motion-free resting state data after censoring out frames with FD>0.2mm
+
+# Load and clean data and divide into subsets (using DCAN-Labs groups)
+
+## Load data from various files
+
+```{r}
+# Load ABCD release 4.0 file abcd_imgincl01.txt (imaging QA inclusion/exclusion)
+imgincl01 <- read.table(paste(workdir, '/data/abcd_imgincl01.txt', sep = ""), header = TRUE)
+# drop first line of text (variable descriptions)
+imgincl01 <- imgincl01[-1, ]
+
+# Load ABCD release 4.0 file abcd_lt01.txt (age, sex)
+lt01 <- read.table(paste(workdir, '/data/abcd_lt01.txt', sep = ""), header = TRUE)
+# drop first line of text (variable descriptions)
+lt01 <- lt01[-1, ]
+
+# Load ABCD release 4.0 file abcd_mri01.txt (mri_info_deviceserialnumber)
+mri01 <- read.table(paste(workdir, '/data/abcd_mri01.txt', sep = ""), header = TRUE)
+# drop first line of text (variable descriptions)
+mri01 <- mri01[-1, ]
+
+## betnet02 (rsfMRI head motion (mean framewise displacement))
+betnet02 <- read.table(paste(workdir, '/data/abcd_betnet02.txt', sep = ""), header = TRUE, sep = '\t')
+# drop first line of text (variable descriptions)
+betnet02 <- betnet02[-1, ]
+
+# Load CBCL parent-reported questionnaire abcd_cbcl01.txt (used to calculate CBCL-OCS)
+cbcl01 <- read.table(paste(workdir, '/data/abcd_cbcl01.txt', sep = ""), header = TRUE)
+
+```
+
+## Concatenate useful variables across ABCD files
+```{r}
+# Extract subject IDs for participants flagged for inclusion of baseline rsfMRI by ABCD QA process
+abcd_incl <- imgincl01[imgincl01$eventname == 'baseline_year_1_arm_1', ]
+paste('participants with imaging data in ABCD baseline data release: ', nrow(abcd_incl))
+abcd_incl <- abcd_incl[abcd_incl$imgincl_rsfmri_include == 1, ]
+paste('participants with baseline rsfMRI data marked for inclusion based on ABCD QA: ', nrow(abcd_incl))
+
+# Remove non-baseline data from other ABCD files, keep only relevant variables
+lt011y <- lt01[lt01$eventname == '1_year_follow_up_y_arm_1', c('subjectkey','interview_age')]
+lt012y <- lt01[lt01$eventname == '2_year_follow_up_y_arm_1', c('subjectkey','interview_age')]
+lt01 <- lt01[lt01$eventname == 'baseline_year_1_arm_1', c('subjectkey','interview_age','sex','site_id_l')]
+mri01 <- mri01[mri01$eventname == 'baseline_year_1_arm_1', c('subjectkey','mri_info_deviceserialnumber')]
+betnet02 <- betnet02[betnet02$eventname == 'baseline_year_1_arm_1', c('subjectkey','rsfmri_c_ngd_meanmotion')] #Average framewise displacement in mm
+
+# double-check we are keeping the correct CBCL-OCS items
+cbcl01[1, c(18,40,41,61,82,100,101,128)] #to view column descriptions
+# drop first line of text (variable descriptions)
+cbcl01 <- cbcl01[-1, ]
+subjectkey <- cbcl01[cbcl01$eventname == 'baseline_year_1_arm_1', c('subjectkey')]
+cbcl01 <- cbcl01[cbcl01$eventname == 'baseline_year_1_arm_1', c(18,40,41,61,82,100,101,128)]
+#rename columns
+names(cbcl01) <- c('obsessions','something_bad','perfect','guilty','compulsions','strange_behavior','strange_ideas','worries')
+#convert columns to numeric from factor
+cbcl01[ ,1:8] <- apply(cbcl01[ ,1:8], 2, function(x) as.numeric(as.character(x)))
+cbcl01$cbcl_ocs_score <- rowSums(cbcl01)
+cbcl01$subjectkey <- subjectkey
+
+# Use imaging QA participant list as a template, merge in other variables
+data_abcd <- abcd_incl[ , c('subjectkey', 'imgincl_rsfmri_include')]
+data_abcd <- merge(data_abcd, lt01, by = 'subjectkey', all.x = TRUE)
+data_abcd <- merge(data_abcd, mri01, by = 'subjectkey', all.x = TRUE)
+data_abcd <- merge(data_abcd, betnet02, by = 'subjectkey', all.x = TRUE)
+data_abcd <- merge(data_abcd, cbcl01, by = 'subjectkey', all.x = TRUE)
+
+#visually check/confirm duplicates
+duplicates1 <- subset(data_abcd,duplicated(data_abcd$subjectkey))
+duplicates2 <- subset(data_abcd,duplicated(data_abcd$subjectkey, fromLast = TRUE))
+#if needed, update both copies of the duplicate entry to have correct mri_info_deviceserialnumber
+# for(d in 1:nrow(duplicates1)) {
+#   goodinfo <- as.factor(paste(duplicates1$mri_info_deviceserialnumber[d], duplicates2$mri_info_deviceserialnumber[d], sep=''))
+#   data_abcd$mri_info_deviceserialnumber[as.numeric(row.names(duplicates1)[d])] <- goodinfo
+#   data_abcd$mri_info_deviceserialnumber[as.numeric(row.names(duplicates2)[d])] <- goodinfo
+# }
+# data_abcd <- data_abcd[!duplicated(data_abcd$subjectkey), ]
+#rm(d)
+rm(duplicates1, duplicates2)
+```
+
+Review variables for missingness
+```{r}
+# data release 4.0 no longer has missing values for mri_info_deviceserialnumber
+nrow(data_abcd[data_abcd$mri_info_deviceserialnumber=='',])
+
+#no other variables have missing values
+nrow(data_abcd[data_abcd$imgincl_rsfmri_include=='',]) #can't be missing as participant list was defined off this
+nrow(data_abcd[data_abcd$site=='',])
+nrow(data_abcd[data_abcd$interview_age=='',])
+nrow(data_abcd[data_abcd$sex=='',])
+
+nrow(data_abcd[data_abcd$cbcl_ocs_score=='',]) #some of these are missing in data release 4.0 (5 missing)
+table(data_abcd$cbcl_ocs_score)
+
+
+```
+
+## Format to combine with DCAN-Labs data
+
+```{r}
+#Reformat subjectkey to match DCAN participant ID formatting, add as new field 'participant_id'
+participant_id <- as.character(data_abcd$subjectkey)
+participant_id <- paste("sub-", participant_id, sep = "")
+participant_id <- sub("_", "", participant_id)
+participant_id <- as.data.frame(participant_id)
+data_abcd <- cbind(data_abcd, participant_id)
+rm(participant_id)
+
+#Divide into discovery and test sets, format, and save as a subject list for DCAN downloader
+#load participants.tsv from DCAN lab
+participants_dcan <- read.table(paste('/Users/marshlab2/Dropbox/SimpsonMarshPhD/OCS_bigdata_ML','/scripts/nda-abcd-s3-downloader-master/Collection_Documents/participants_v1.0.0/participants.tsv', sep = ""), header = TRUE)
+
+#keep only baseline data, participant ID and matched_group variables
+participants_dcan <- participants_dcan[participants_dcan$session_id == 'ses-baselineYear1Arm1', c('participant_id', 'matched_group','race_ethnicity','handedness')]
+
+subject_list_merged <- merge(data_abcd, participants_dcan, by = 'participant_id', all.x = TRUE)
+
+# 44 participants in the DCAN spreadsheet have 2 entries (rows)
+# each of these participants has 2 rows that are identical except for site (so each participant has 2 sites listed
+# but none of these duplicates have contradictory matched_group assignments, so it doesn't affect this...
+#duplicates1 <- subset(subject_list_merged,duplicated(subject_list_merged$participant_id))
+#duplicates2 <- subset(subject_list_merged,duplicated(subject_list_merged$participant_id, fromLast = TRUE))
+#duplicates <- rbind(duplicates1, duplicates2)
+#rm(duplicates1, duplicates2, duplicates)
+# remove duplicates
+subject_list_merged <- subject_list_merged[!duplicated(subject_list_merged$participant_id), ]
+
+subject_list_discovery <- subject_list_merged[subject_list_merged$matched_group == 1, ]
+subject_list_discovery <- subject_list_discovery[!is.na(subject_list_discovery$participant_id), ] #remove rows with all NAs
+#write.table(subject_list_discovery[ , c("participant_id")], paste(workdir, '/scripts/nda-abcd-s3-downloader-master/subject_list_discovery.txt', sep = ""), quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+subject_list_test <- subject_list_merged[subject_list_merged$matched_group == 3, ]
+subject_list_test <- subject_list_test[!is.na(subject_list_test$participant_id), ] #remove rows with all NAs
+#write.table(subject_list_test[ , c("participant_id")], paste(workdir, '/scripts/nda-abcd-s3-downloader-master/subject_list_test.txt', sep = ""), quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+subject_list_replication <- subject_list_merged[subject_list_merged$matched_group == 2, ]
+subject_list_replication <- subject_list_replication[!is.na(subject_list_replication$participant_id), ] #remove rows with all NAs
+#write.table(subject_list_replication[ , c("participant_id")], paste(workdir, '/scripts/nda-abcd-s3-downloader-master/subject_list_replication.txt', sep = ""), quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+# Clean up memory
+rm(imgincl01, lt01, mri01, cbcl01, betnet02, participants_dcan, abcd_incl, subjectkey)
+
+# Simple stats
+table(subject_list_discovery$imgincl_rsfmri_incl)
+table(subject_list_test$imgincl_rsfmri_incl)
+table(subject_list_replication$imgincl_rsfmri_incl)
+
+table(subject_list_discovery$sex)[1:2]
+table(subject_list_test$sex)
+chisq.test(subject_list_merged$matched_group, subject_list_merged$sex)
+
+mean(as.numeric(as.character((subject_list_discovery$interview_age))), na.rm = TRUE)
+sd(as.numeric(as.character((subject_list_discovery$interview_age))), na.rm = TRUE)
+mean(as.numeric(as.character((subject_list_replication$interview_age))), na.rm = TRUE)
+sd(as.numeric(as.character((subject_list_replication$interview_age))), na.rm = TRUE)
+t.test(as.numeric(as.character((subject_list_discovery$interview_age))),as.numeric(as.character((subject_list_replication$interview_age))))
+
+mean(as.numeric(as.character((subject_list_discovery$cbcl_ocs_score))), na.rm = TRUE)
+sd(as.numeric(as.character((subject_list_discovery$cbcl_ocs_score))), na.rm = TRUE)
+mean(as.numeric(as.character((subject_list_replication$cbcl_ocs_score))), na.rm = TRUE)
+sd(as.numeric(as.character((subject_list_replication$cbcl_ocs_score))), na.rm = TRUE)
+t.test(as.numeric(as.character((subject_list_discovery$cbcl_ocs_score))),as.numeric(as.character((subject_list_replication$cbcl_ocs_score))))
+
+table(subject_list_discovery$race_ethnicity)
+table(subject_list_replication$race_ethnicity)
+
+#ocs_discovery <- hist(as.numeric(as.character((subject_list_discovery$cbcl_ocs_score))), main="Discovery", freq=FALSE, xlab="CBCL-OCS score", xlim=c(0,16))
+#ocs_test <- hist(as.numeric(as.character((subject_list_test$cbcl_ocs_score))), main="Test", freq=FALSE, xlab="CBCL-OCS score", xlim=c(0,16))
+#ocs_replication <- hist(as.numeric(as.character((subject_list_replication$cbcl_ocs_score))), main="Replication", freq=FALSE, xlab="CBCL-OCS score", xlim=c(0,16))
+
+hist(as.numeric(as.character((subject_list_discovery$cbcl_ocs_score))), main="Discovery", freq=FALSE, xlab="CBCL-OCS score", xlim=c(0,16))
+hist(as.numeric(as.character((subject_list_test$cbcl_ocs_score))), main="Test", freq=FALSE, xlab="CBCL-OCS score", xlim=c(0,16))
+hist(as.numeric(as.character((subject_list_replication$cbcl_ocs_score))), main="Replication", freq=FALSE, xlab="CBCL-OCS score", xlim=c(0,16))
+```
+
+## Download and format imaging data
+
+1. Use DCAN-Labs' ABCD downloader (python3) to download 10minute pconn.nii files for these subject lists. DCAN-Labs downloader available here: https://github.com/DCAN-Labs/nda-abcd-s3-downloader
+
+  # python3 download_focused.py -i datastructure_manifest.txt -o FILES_discovery -s subject_list_discovery.txt -l LOGS -d data_subsets_focused.txt
+  # python3 download_focused.py -i datastructure_manifest.txt -o FILES_test -s subject_list_test.txt -l LOGS -d data_subsets_focused.txt
+
+2. Download and install/add to path Matlab toolbox for working with cifti files: https://github.com/Washington-University/cifti-matlab
+
+3. Remove duplicate raw connectivity features by taking upper or lower triangular matrix (without the diagonal)
+
+4. Concatenate raw connectivity features for all participants in each subset (discovery, validation, replication)
+
+5. Import raw connectivity features into R
+
+```{r}
+library(R.matlab)
+connmats_raw_discovery <- readMat('/Users/marshlab2/Desktop/OCS_bigdata_ML_local/data/dropbox_altstorage/cf_mat_raw_discovery.mat')
+connmats_raw_discovery <- connmats_raw_discovery[[1]]
+
+```
+
+
+## Extract clinical data and covariates (demographic, administrative, head motion)
+
+Clinical data: 8 individual item scores from CBCL comprising the CBCL-OCS scale
+Covariates: Age, sex, race, site
+```{r}
+#import (from Matlab) subject list denoting which participants have valid connmat
+matlab_subject_list_discovery <- read.table('/Users/marshlab2/Desktop/OCS_bigdata_ML_local/data/dropbox_altstorage/subj_list_raw_discovery.txt', header = TRUE, sep = ",")
+names(matlab_subject_list_discovery) = c('participant_id','matlab_include')
+
+#merge with covariates and clinical data file
+data_discovery <- merge(matlab_subject_list_discovery, subject_list_discovery, by = 'participant_id', all = TRUE)
+
+#clinical data (CBCL-OCS individual items)
+cbcl_ocs_discovery <- data_discovery[data_discovery$matlab_include==1,c('obsessions','something_bad','perfect','guilty','compulsions','strange_behavior','strange_ideas','worries')]
+
+#covariates
+covariates_discovery <- data_discovery[data_discovery$matlab_include==1,c('interview_age','sex','site_id_l','mri_info_deviceserialnumber','race_ethnicity','rsfmri_c_ngd_meanmotion')]
+
+# #doublecheck that all IDs are in same order after merge
+ids_discovery <- data_discovery[data_discovery$matlab_include==1,c('participant_id','matlab_include')]
+ids_discovery$id_subjectlist <- matlab_subject_list_discovery[matlab_subject_list_discovery$matlab_include==1,c('participant_id')]
+ids_discovery$check <- (ids_discovery$participant_id == ids_discovery$id_subjectlist)
+table(ids_discovery$check)
+
+subjectkey_discovery <- data_discovery[data_discovery$matlab_include==1,c('participant_id','subjectkey')]
+
+#check/reformat all variables to appropriate class
+#age (numeric)
+covariates_discovery$interview_age <- as.numeric(as.character(covariates_discovery$interview_age))
+covariates_discovery$scaled_age <- scale(covariates_discovery$interview_age) #standardize variable
+mean(covariates_discovery$interview_age)
+sd(covariates_discovery$interview_age)
+class(covariates_discovery$scaled_age)
+
+#sex (factor)
+class(covariates_discovery$sex)
+#site (factor)
+class(covariates_discovery$site_id_l)
+levels(covariates_discovery$site_id_l)
+covariates_discovery$site_id_l <- droplevels(covariates_discovery$site_id_l) #drop unused levels
+levels(covariates_discovery$site_id_l)
+#scanner (factor)
+class(covariates_discovery$mri_info_deviceserialnumber)
+table(covariates_discovery$mri_info_deviceserialnumber)
+covariates_discovery$mri_info_deviceserialnumber <- droplevels(covariates_discovery$mri_info_deviceserialnumber)
+levels(covariates_discovery$mri_info_deviceserialnumber)
+#race/ethnicity (factor)
+class(covariates_discovery$race_ethnicity) #defaults to integer
+covariates_discovery$race_ethnicity <- as.factor(covariates_discovery$race_ethnicity)
+class(covariates_discovery$race_ethnicity)
+levels(covariates_discovery$race_ethnicity)
+table(covariates_discovery$race_ethnicity)
+#only 2 participants coded as 888 -- remove these as causes issue with covariate regression from clinical features
+covariates_discovery$race_ethnicity[covariates_discovery$race_ethnicity=='888'] <- NA
+covariates_discovery$race_ethnicity <- droplevels(covariates_discovery$race_ethnicity)
+missingraceeth <- which(is.na(covariates_discovery$race_ethnicity))
+levels(covariates_discovery$race_ethnicity)
+
+#mean motion (numeric)
+covariates_discovery$rsfmri_c_ngd_meanmotion <- as.numeric(as.character(covariates_discovery$rsfmri_c_ngd_meanmotion))
+covariates_discovery$scaled_motion <- scale(covariates_discovery$rsfmri_c_ngd_meanmotion) #standardize variable
+mean(covariates_discovery$rsfmri_c_ngd_meanmotion, na.rm = TRUE)
+sd(covariates_discovery$rsfmri_c_ngd_meanmotion, na.rm = TRUE)
+class(covariates_discovery$scaled_motion)
+
+rm(subject_list_merged, subject_list_discovery)
+rm(subject_list_replication, subject_list_test)
+```
+
+```{r}
+#drop the two participants without race/ethnicity data from discovery dataset
+#NB: this is done manually here because setting 'na.action = na.exclude' doesn't work for zeroinfl function
+cbcl_ocs_discovery <- cbcl_ocs_discovery[c(-missingraceeth),]
+covariates_discovery <- covariates_discovery[c(-missingraceeth),]
+connmats_raw_discovery <- connmats_raw_discovery[c(-missingraceeth),]
+ids_discovery <- ids_discovery[c(-missingraceeth),]
+ids_discovery <- ids_discovery$participant_id
+subjectkey_discovery <- subjectkey_discovery[c(-missingraceeth),]
+
+# check for NA values
+any(is.na(cbcl_ocs_discovery))
+any(is.na(connmats_raw_discovery))
+any(is.na(covariates_discovery))
+```
+
+## Save raw clinical, rs-FC, and covariates data
+```{r eval=FALSE, include=FALSE}
+rm(data_abcd, data_discovery, matlab_subject_list_discovery, missingraceeth, workdir)
+save.image("~/Desktop/OCS_bigdata_ML_local/FINAL/discovery/data/Data_prep/discovery_raw_data.RData")
+
+#save discovery subject ID list
+write.csv(subjectkey_discovery,file="~/Desktop/OCS_bigdata_ML_local/FINAL/discovery/data/Data_prep/subjectkey_discovery.csv",row.names=F)
+```
+
+## Regress out covariates and visualize rsFC features
+```{r}
+rsFC_features <- array(numeric(), dim(connmats_raw_discovery)) #initialize array for rsFC features (after covariates are regressed out)
+rsFC_covariate_coeffs <- array(numeric(), c(36, ncol(connmats_raw_discovery)))
+rsFC_feat_normaltest <- array(numeric(), c(2, ncol(connmats_raw_discovery)))
+
+for(i in 1:ncol(connmats_raw_discovery)) {
+  model_i <- lm(connmats_raw_discovery[, i] ~ covariates_discovery$scaled_age + covariates_discovery$sex + covariates_discovery$mri_info_deviceserialnumber + covariates_discovery$race_ethnicity + covariates_discovery$scaled_motion, na.action = na.exclude)
+  rsFC_features[, i] <- residuals(model_i) #pads residuals with NA where predictor vars have NA values
+  rsFC_covariate_coeffs[, i] <- model_i$coefficients
+ 
+  #Shapiro-Wilk test for normality of residuals (i.e. the rsFC feature after covariate regression)
+  # p>.05 means data are not significantly different from normal distribution
+  shapiro_result <- shapiro.test(rsFC_features[, i])
+  rsFC_feat_normaltest[1, i] <- shapiro_result$statistic
+  rsFC_feat_normaltest[2, i] <- shapiro_result$p.value
+}
+
+names(rsFC_feat_normaltest) <- c('statistic','pval')
+hist(rsFC_feat_normaltest[2, ], main = paste('Histogram of Shapiro-Wilk test p-values for each rsFC feature'), xlab = 'p-value')
+
+#standardize (mean center, scale by SD)
+rsFC_features_scaled <- scale(rsFC_features, center = TRUE, scale = TRUE)
+#write.csv(rsFC_features_scaled, '/Users/marshlab2/Desktop/OCS_bigdata_ML_local/data/rsFC_features_scaled.csv', row.names = FALSE, col.names = FALSE)
+
+#write.table(rsFC_features, paste(workdir, '/data/ML_features/rsFC_features_discovery.txt', sep = ""), col.names=NA)
+#write.table(rsFC_covariate_coeffs, paste(workdir, '/data/ML_features/rsFC_covariate_coeffs_discovery.txt', sep = ""), col.names=NA)
+#write.table(rsFC_feat_normaltest, paste(workdir, '/data/ML_features/rsFC_feat_normaltest_discovery.txt', sep = ""), col.names=NA)
+
+any(is.na(rsFC_features))
+
+
+
+
+# 
+# ## generate covariate matrix for Winkler et al. CCA permutations
+# # create dummy variables for all factor levels (leaving out one level for each factor variable)
+# covariates_Z_discovery <- covariates_discovery[, c("scaled_age", "scaled_motion")]
+# covariates_Z_discovery$sexF <- as.integer(covariates_discovery$sex == "F")
+# covariates_Z_discovery$race_ethnicity2 <- as.integer(covariates_discovery$race_ethnicity == 2)
+# covariates_Z_discovery$race_ethnicity3 <- as.integer(covariates_discovery$race_ethnicity == 3)
+# covariates_Z_discovery$race_ethnicity4 <- as.integer(covariates_discovery$race_ethnicity == 4)
+# covariates_Z_discovery$race_ethnicity5 <- as.integer(covariates_discovery$race_ethnicity == 5)
+# 
+# temp <- sapply(levels(covariates_discovery$mri_info_deviceserialnumber), function(x) as.integer(x == covariates_discovery$mri_info_deviceserialnumber))
+# #drop level HASH03db707f for mri_info_deviceserialnumber
+# covariates_Z_discovery <- cbind(covariates_Z_discovery, temp[,2:29])
+# 
+# write.csv(covariates_Z_discovery, '/Users/marshlab2/Desktop/OCS_bigdata_ML_local/data/covariates_Z_discovery.csv', row.names = FALSE, col.names = FALSE)
+```
+
+## Regress out covariates and visualize clinical features
+```{r}
+library(pscl)
+
+class(cbcl_ocs_discovery$obsessions)
+
+# view cross tabulated data
+table(cbcl_ocs_discovery[,1], covariates_discovery$race_ethnicity)
+#table(cbcl_ocs_discovery[,1], covariates_discovery$site_id_l)
+  
+clin_features <- array(numeric(), dim(cbcl_ocs_discovery)) #initialize array for rsFC features (after covariates are regressed out)
+clin_covariate_coeffs_count <- array(numeric(), c(7, ncol(cbcl_ocs_discovery))) #coefficients for poisson portion of model
+clin_covariate_coeffs_zero <- array(numeric(), c(7, ncol(cbcl_ocs_discovery))) #coefficients for binary portion of model
+clin_feat_normaltest <- array(numeric(), c(2, ncol(cbcl_ocs_discovery)))
+  
+for(i in 1:ncol(cbcl_ocs_discovery)) {
+  model_i <- zeroinfl(cbcl_ocs_discovery[, i] ~ covariates_discovery$scaled_age + covariates_discovery$sex + covariates_discovery$race_ethnicity, dist = "poisson", na.action = na.exclude)
+  #model_i <- polr(cbcl_ocs_discovery[, i] ~ covariates_discovery$scaled_age + covariates_discovery$sex + covariates_discovery$race_ethnicity + covariates_discovery$site_id_l)
+  clin_features[, i] <- model_i$residuals
+  clin_covariate_coeffs_count[, i] <- model_i$coefficients$count
+  clin_covariate_coeffs_zero[, i] <- model_i$coefficients$zero
+ 
+  #Shapiro-Wilk test for normality of residuals (i.e. the rsFC feature after covariate regression)
+  # p>.05 means data are not significantly different from normal distribution
+  shapiro_result <- shapiro.test(clin_features[, i])
+  clin_feat_normaltest[1, i] <- shapiro_result$statistic
+  clin_feat_normaltest[2, i] <- shapiro_result$p.value
+}
+
+names(clin_feat_normaltest) <- c('statistic','pval')
+
+#visualize - note that the clinical features after covariate regression are nowhere close to normally distributed
+hist(clin_features[, 1])
+hist(clin_features[, 2])
+hist(clin_features[, 3])
+hist(clin_features[, 4])
+hist(clin_features[, 5])
+hist(clin_features[, 6])
+hist(clin_features[, 7])
+hist(clin_features[, 8])
+
+#standardize (mean center, scale by SD)
+clin_features_scaled <- scale(clin_features, center = TRUE, scale = TRUE)
+
+
+#write.table(clin_features, paste(workdir, '/data/ML_features/clin_features_discovery.txt', sep = ""), col.names=NA)
+#write.table(clin_covariate_coeffs_count, paste(workdir, '/data/ML_features/clin_covariate_coeffs_count_discovery.txt', sep = ""), col.names=NA)
+#write.table(clin_covariate_coeffs_zero, paste(workdir, '/data/ML_features/clin_covariate_coeffs_zero_discovery.txt', sep = ""), col.names=NA)
+#write.table(clin_feat_normaltest, paste(workdir, '/data/ML_features/clin_feat_normaltest_discovery.txt', sep = ""), col.names=NA)
+
+any(is.na(clin_features))
+
+
+```
+
+## Save raw clinical, rs-FC, and covariates data
+```{r eval=FALSE, include=FALSE}
+save.image("~/Desktop/OCS_bigdata_ML_local/FINAL/discovery/data/Data_prep/discovery_features_data.RData")
+
+```
+
+Clean up workspace
+```{r}
+rm(clin_covariate_coeffs_count, clin_covariate_coeffs_zero, clin_feat_normaltest)
+rm(connmats_raw_discovery, rsFC_covariate_coeffs, rsFC_feat_normaltest)
+rm(covariates_discovery, data_abcd, data_discovery, matlab_subject_list_discovery, model_i, shapiro_result)
+rm(d, goodinfo, i, missingraceeth)
+```
+
+Store features as .csv for export to python (run this block as needed)
+```{r}
+write.csv(clin_features_scaled, '/Users/marshlab2/Desktop/OCS_bigdata_ML_local/FINAL/discovery/data/clin_features_scaled.csv', row.names = FALSE, col.names = FALSE)
+write.csv(rsFC_features_scaled, '/Users/marshlab2/Desktop/OCS_bigdata_ML_local/FINAL/discovery/data/rsFC_features_scaled.csv', row.names = FALSE, col.names = FALSE)
+
+
+```
+
+## Partition data for cross-validation
+```{r}
+set.seed(12345) # set seed for reproducibility
+
+# set multiple k-folds cross-validation parameters
+kfolds_k <- 10
+kfolds_times <- 10
+
+paste("number of k-folds repetitions: ", kfolds_times) 
+paste("number of cross-validation folds per rep: ", kfolds_k)
+
+library(caret)
+
+#10-times 10-fold cross validation used for rsFC feature selection
+partitions <- createMultiFolds((1:dim(clin_features_scaled)[1]), k = kfolds_k, times = kfolds_times)
+# partitions contains row indices of participants for each cross-validation-training set
+
+set.seed(111)
+partitions2 <- createMultiFolds((1:dim(clin_features_scaled)[1]), k = kfolds_k, times = 1)
+```
+
+Store indices of cross-validation partitions for Matlab/python
+```{r eval=FALSE, include=FALSE}
+#cross-validation partitions
+write.csv(partitions2$Fold01.Rep1, '/Users/marshlab2/Desktop/OCS_bigdata_ML_local/FINAL/discovery/data/partitions2_rep01fold1.csv', row.names = FALSE, col.names = FALSE)
+write.csv(partitions2$Fold02.Rep1, '/Users/marshlab2/Desktop/OCS_bigdata_ML_local/FINAL/discovery/data/partitions2_rep01fold2.csv', row.names = FALSE, col.names = FALSE)
+write.csv(partitions2$Fold03.Rep1, '/Users/marshlab2/Desktop/OCS_bigdata_ML_local/FINAL/discovery/data/partitions2_rep01fold3.csv', row.names = FALSE, col.names = FALSE)
+write.csv(partitions2$Fold04.Rep1, '/Users/marshlab2/Desktop/OCS_bigdata_ML_local/FINAL/discovery/data/partitions2_rep01fold4.csv', row.names = FALSE, col.names = FALSE)
+write.csv(partitions2$Fold05.Rep1, '/Users/marshlab2/Desktop/OCS_bigdata_ML_local/FINAL/discovery/data/partitions2_rep01fold5.csv', row.names = FALSE, col.names = FALSE)
+write.csv(partitions2$Fold06.Rep1, '/Users/marshlab2/Desktop/OCS_bigdata_ML_local/FINAL/discovery/data/partitions2_rep01fold6.csv', row.names = FALSE, col.names = FALSE)
+write.csv(partitions2$Fold07.Rep1, '/Users/marshlab2/Desktop/OCS_bigdata_ML_local/FINAL/discovery/data/partitions2_rep01fold7.csv', row.names = FALSE, col.names = FALSE)
+write.csv(partitions2$Fold08.Rep1, '/Users/marshlab2/Desktop/OCS_bigdata_ML_local/FINAL/discovery/data/partitions2_rep01fold8.csv', row.names = FALSE, col.names = FALSE)
+write.csv(partitions2$Fold09.Rep1, '/Users/marshlab2/Desktop/OCS_bigdata_ML_local/FINAL/discovery/data/partitions2_rep01fold9.csv', row.names = FALSE, col.names = FALSE)
+write.csv(partitions2$Fold10.Rep1, '/Users/marshlab2/Desktop/OCS_bigdata_ML_local/FINAL/discovery/data/partitions2_rep01fold10.csv', row.names = FALSE, col.names = FALSE)
+
+
+```
+
+
+Save R workspace for continued work in R
+
+Do feature selection on unscaled features, but use scaled features for running CCA for cross-validation/hyperparam tuning!
+
+
+
+
+
+
+Summary statistics by subsample
+```{r}
+mean(covariates_discovery$interview_age)/12
+sd(covariates_discovery$interview_age)/12
+range(covariates_discovery$interview_age)/12
+
+table(covariates_discovery$sex)[["F"]]/length(covariates_discovery$sex)
+
+#CBCL-OCS total score
+t <- rowSums(cbcl_ocs_discovery)
+mean(t)
+sd(t)
+hist(t,main = "Discovery", xlab = "CBCL-OCS Total Score", freq = FALSE, right = FALSE, ylim = range(0,0.5))
+rm(t)
+
+#individual CBCL-OCS items in-sample prevalence
+table(cbcl_ocs_discovery_binary[,1])[["TRUE"]]/length(cbcl_ocs_discovery_binary[,1])
+table(cbcl_ocs_discovery_binary[,2])[["TRUE"]]/length(cbcl_ocs_discovery_binary[,1])
+table(cbcl_ocs_discovery_binary[,3])[["TRUE"]]/length(cbcl_ocs_discovery_binary[,1])
+table(cbcl_ocs_discovery_binary[,4])[["TRUE"]]/length(cbcl_ocs_discovery_binary[,1])
+table(cbcl_ocs_discovery_binary[,5])[["TRUE"]]/length(cbcl_ocs_discovery_binary[,1])
+table(cbcl_ocs_discovery_binary[,6])[["TRUE"]]/length(cbcl_ocs_discovery_binary[,1])
+table(cbcl_ocs_discovery_binary[,7])[["TRUE"]]/length(cbcl_ocs_discovery_binary[,1])
+table(cbcl_ocs_discovery_binary[,8])[["TRUE"]]/length(cbcl_ocs_discovery_binary[,1])
+
+#temp
+tc <- array(numeric(),c(8,2))
+tc[1,1] <- table(cbcl_ocs_discovery_binary[,1])[["TRUE"]]/length(cbcl_ocs_discovery_binary[,1])
+tc[2,1] <- table(cbcl_ocs_discovery_binary[,2])[["TRUE"]]/length(cbcl_ocs_discovery_binary[,1])
+tc[3,1] <- table(cbcl_ocs_discovery_binary[,3])[["TRUE"]]/length(cbcl_ocs_discovery_binary[,1])
+tc[4,1] <- table(cbcl_ocs_discovery_binary[,4])[["TRUE"]]/length(cbcl_ocs_discovery_binary[,1])
+tc[5,1] <- table(cbcl_ocs_discovery_binary[,5])[["TRUE"]]/length(cbcl_ocs_discovery_binary[,1])
+tc[6,1] <- table(cbcl_ocs_discovery_binary[,6])[["TRUE"]]/length(cbcl_ocs_discovery_binary[,1])
+tc[7,1] <- table(cbcl_ocs_discovery_binary[,7])[["TRUE"]]/length(cbcl_ocs_discovery_binary[,1])
+tc[8,1] <- table(cbcl_ocs_discovery_binary[,8])[["TRUE"]]/length(cbcl_ocs_discovery_binary[,1])
+
+tc[1,2] <- 0.703837414838958
+tc[2,2] <- 0.774621931533237
+tc[3,2] <- 0.671796189220894
+tc[4,2] <- 0.789480976522737
+tc[5,2] <- 0.841248475500628
+tc[6,2] <- 0.884250117632865
+tc[7,2] <- 0.85561488431253
+tc[8,2] <- 0.682450688734507
+
+plot(tc, xlab = "Percentage of participants with symptom X", ylab = "AUROC for model predicting symptom X")
+```
+
+
+
+
+
+
+
