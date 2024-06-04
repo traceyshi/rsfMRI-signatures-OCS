@@ -1,4 +1,5 @@
 # OCS-rsfMRI-signatures
+(repository in progress)
 
 1. Follow instructions to download/prep the DCAN-Labs utility for downloading the ABCD-BIDS collection 3165 [https://github.com/DCAN-Labs/nda-abcd-s3-downloader].
 2. Download clinical and covariate files from ABCD release 4.0 on NDA.
