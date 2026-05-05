@@ -1,0 +1,328 @@
+---
+title: "Generate figures"
+output: html_notebook
+---
+
+# Setup
+```{r}
+library(irr)
+library(ggplot2)
+
+workdir <- '/path/to/workdir'
+
+```
+
+
+
+# Figure 4: Fitted and imputed enCCA canonical correlations across subsamples
+```{r}
+canoncorrs1 <- read.csv(paste(workdir, '/replication/results/elasticnetCCA_scaled/allsubsets_canoncorrs1.csv', sep = ""), header = FALSE)
+names(canoncorrs1) <- c("corr", "pval", "CI95lower", "CI95upper")
+canoncorrs1$CV <- 1
+canoncorrs1$Subsample <- c("Discovery", "Test", "Replication")
+
+canoncorrs2 <- read.csv(paste(workdir, '/replication/results/elasticnetCCA_scaled/allsubsets_canoncorrs2.csv', sep = ""), header = FALSE)
+names(canoncorrs2) <- c("corr", "pval", "CI95lower", "CI95upper")
+canoncorrs2$CV <- 2
+canoncorrs2$Subsample <- c("Discovery", "Test", "Replication")
+
+canoncorrs3 <- read.csv(paste(workdir, '/replication/results/elasticnetCCA_scaled/allsubsets_canoncorrs3.csv', sep = ""), header = FALSE)
+names(canoncorrs3) <- c("corr", "pval", "CI95lower", "CI95upper")
+canoncorrs3$CV <- 3
+canoncorrs3$Subsample <- c("Discovery", "Test", "Replication")
+
+figdata <- rbind(canoncorrs1, canoncorrs2, canoncorrs3)
+figdata[1,3] <- NA
+figdata[1,4] <- NA
+figdata[4,3] <- NA
+figdata[4,4] <- NA
+figdata[7,3] <- NA
+figdata[7,4] <- NA
+
+ggplot(figdata, aes(x=CV, y=corr, fill=Subsample, color=Subsample)) +
+  geom_bar(stat="identity", position = "dodge", alpha=0.7) +
+  scale_fill_manual(values = c("#48AEE1", "#EC6C53","#67C60F")) +
+  scale_color_manual(values = c("#48AEE1", "#EC6C53","#67C60F")) +
+  geom_errorbar( aes(x=CV, ymin=CI95lower, ymax=CI95upper), alpha=0.9, size=0.5, position = "dodge") +
+  labs(x="Canonical variate pair (signature)", y="Canonical correlation") +
+  theme_bw() + 
+  theme(panel.grid.minor = element_blank(), panel.grid.major.x = element_blank()) +
+  theme(legend.position = c(0.9, 0.85)) +
+  theme(panel.border = element_blank(), axis.line = element_line()) +
+  geom_hline(yintercept=0, linetype="dashed")
+
+
+ggsave(paste(workdir, '/figures/fig4.png', sep = ""), width = 8, height = 6, dpi = 1000)
+```
+
+
+# Figure xx: enCCA feature loadings
+
+## EnCCA symptom loadings
+
+```{r}
+# Libraries
+library(ggplot2)
+library(svglite)
+
+# CCA clinical variable loadings
+signflip <- c(-1, -1, -1, -1, 1, -1, -1, 1)
+clin_labels <- c("Obsessions", "SomethingBad", "Perfect", "Guilty", "Compulsions", "StrangeBehavior", "StrangeIdeas", "Worries")
+
+i <- 1
+for (i in 1:length(clin_labels)) {
+  print(i)
+  clin_loadings <- read.table(paste(workdir, '/replication/results/elasticnetCCA_scaled/replication_selected_features/allreplication_clinloadings_u_CV', i, 'norm.csv', sep = ""))
+  clin_loadings <- as.data.frame(clin_loadings * signflip[i])
+  names(clin_loadings) <- "Loadings"
+  clin_loadings$Symptoms <- factor(clin_labels, levels = rev(clin_labels), ordered = TRUE)
+  levels(clin_loadings$Symptoms)
+  
+  if(sum(clin_loadings$Loadings>0) == 8) { #if all loadings are positive
+    clin_visual <- ggplot(data=clin_loadings, aes(x=Symptoms, y=Loadings, fill=Loadings>0)) + 
+    geom_bar(stat="identity") + 
+    scale_fill_manual(values = c("blue")) +
+    #discovery
+    #ylim(-2500,3140) +
+    #replication
+    ylim(-50,60) +
+    #geom_text(aes(label = Symptoms, vjust = 0)) +
+    labs(x = "", y = "Loading") +
+    coord_flip() +
+    theme_classic() +
+    theme(axis.text = element_text(size = 17), axis.title = element_text(size = 17)) +
+    theme (legend.position = "none")
+  } else {
+    clin_visual <- ggplot(data=clin_loadings, aes(x=Symptoms, y=Loadings, fill=Loadings>0)) + 
+      geom_bar(stat="identity") + 
+      scale_fill_manual(values = c("red", "blue")) +
+      #discovery
+      #ylim(-2500,3140) +
+      #replication
+      ylim(-50,60) +
+      #geom_text(aes(label = Symptoms, vjust = 0)) +
+      labs(x = "", y = "Loading") +
+      coord_flip() +
+      theme_classic() +
+      theme(axis.text = element_text(size = 17), axis.title = element_text(size = 17)) +
+      theme (legend.position = "none")
+  }
+  
+  clin_visual
+  
+  #save plot
+  png(paste('/Users/tracey/Desktop/OCS_bigdata_ML/results/replication/comparison/plot_allreplication_clinloadings_CV', i, '.png', sep = ""))
+  clin_visual
+  dev.off() 
+  
+}
+```
+
+```{r}
+clin_loadings_disc <- read.table(paste(workdir, '/discovery/results/elasticnetCCA_scaled/alldiscovery_clinloadings_u_CV1norm.csv', sep = ""))
+clin_loadings_replA <- read.table(paste(workdir, '/replication/results/elasticnetCCA_scaled/discovery-selected-features/allreplication_clinloadings_u_CV1norm.csv', sep = ""))
+bothclinloadingsA <- cbind(clin_loadings_disc, clin_loadings_replA)
+icc(bothclinloadingsA, model = "twoway", unit = "average", type = "consistency")
+
+clin_loadings_replB <- read.table(paste(workdir, '/replication/results/elasticnetCCA_scaled/allreplication_clinloadings_u_CV1norm.csv', sep = ""))
+bothclinloadingsB <- cbind(clin_loadings_disc, clin_loadings_replB)
+icc(bothclinloadingsB, model = "twoway", unit = "average", type = "consistency")
+```
+
+
+## EnCCA rsFC loadings
+Figures made in Brain Net Viewer in Matlab
+
+## Compare rsFC loadings across subsamples (Discovery versus Replication with Discovery-selected features)
+```{r}
+rsfc_loadings_disc <- read.table(paste(workdir, '/discovery/results/elasticnetCCA_scaled/alldiscovery_rsFCloadings_v_CV1.csv', sep = ""))
+rsfc_inds_disc <- read.table(paste(workdir, '/discovery/results/elasticnetCCA_scaled/alldiscovery_rsFCinds_v_CV1.csv', sep = ""))
+use_rsfc_loadings_disc <- cbind(unlist(rsfc_inds_disc),unlist(rsfc_loadings_disc))
+use_rsfc_loadings_disc_top10 <- tail(use_rsfc_loadings_disc,floor(dim(use_rsfc_loadings_disc)[1]*.1)) #take top weighted 10%
+use_rsfc_loadings_disc_top10 <- use_rsfc_loadings_disc_top10[order(use_rsfc_loadings_disc_top10[,1]),] #sort by ind
+use_rsfc_loadings_disc <- use_rsfc_loadings_disc[order(use_rsfc_loadings_disc[,1]),] #sort by ind
+
+rsfc_loadings_repl <- read.table(paste(workdir, '/replication/results/elasticnetCCA_scaled/discovery-selected-features/allreplication_rsFCloadings_v_CV1.csv', sep = ""))
+rsfc_inds_repl <- read.table(paste(workdir, '/replication/results/elasticnetCCA_scaled/discovery-selected-features/allreplication_rsFCinds_v_CV1.csv', sep = ""))
+use_rsfc_loadings_repl <- cbind(unlist(rsfc_inds_repl),unlist(rsfc_loadings_repl))
+use_rsfc_loadings_repl_top10 <- tail(use_rsfc_loadings_repl,floor(dim(use_rsfc_loadings_repl)[1]*.1)) #take top weighted 10%
+use_rsfc_loadings_repl_top10 <- use_rsfc_loadings_repl_top10[order(use_rsfc_loadings_repl_top10[,1]),] #sort by ind
+use_rsfc_loadings_repl <- use_rsfc_loadings_repl[order(use_rsfc_loadings_repl[,1]),] #sort by ind
+
+#find indices of rsFC in top 1% of both subsamples
+overlap1 <- which(use_rsfc_loadings_disc_top10[,1] %in% use_rsfc_loadings_repl_top10[,1])
+overlap2 <- which(use_rsfc_loadings_repl_top10[,1] %in% use_rsfc_loadings_disc_top10[,1])
+
+overlap <- use_rsfc_loadings_disc_top10[overlap1, 1:2]
+overlap <- cbind(overlap, use_rsfc_loadings_disc_top10[overlap2, 1:2])
+
+#check that indices match
+table(overlap[,1] == overlap[,3])
+
+#check how many of the signs match
+sum(sign(overlap[,2]) == sign(overlap[,4]))
+
+#what percentage of the top 1% is this?
+sum(sign(overlap[,2]) == sign(overlap[,4])) / dim(use_rsfc_loadings_disc_top10)[1]
+
+#calculate correlation of disc and repl loadings
+cor.test(use_rsfc_loadings_disc[,2], use_rsfc_loadings_repl[,2])
+bothloadings <- cbind(use_rsfc_loadings_disc[,2], use_rsfc_loadings_repl[,2])
+icc(bothloadings, model = "twoway", unit = "average", type = "consistency")
+
+
+```
+## Compare rsFC loadings across subsamples (Discovery versus Replication with Replication-selected features)
+```{r}
+rsfc_loadings_disc <- read.table(paste(workdir, '/discovery/results/elasticnetCCA_scaled/alldiscovery_rsFCloadings_v_CV1.csv', sep = ""))
+rsfc_inds_disc <- read.table(paste(workdir, '/discovery/results/elasticnetCCA_scaled/alldiscovery_rsFCinds_v_CV1.csv', sep = ""))
+use_rsfc_loadings_disc <- cbind(unlist(rsfc_inds_disc),unlist(rsfc_loadings_disc))
+use_rsfc_loadings_disc <- tail(use_rsfc_loadings_disc,floor(dim(use_rsfc_loadings_disc)[1]*.1)) #take top weighted 10%
+use_rsfc_loadings_disc <- use_rsfc_loadings_disc[order(use_rsfc_loadings_disc[,1]),]
+
+rsfc_loadings_repl <- read.table(paste(workdir, '/replication/results/elasticnetCCA_scaled/replication-selected-features/allreplication_rsFCloadings_v_CV1.csv', sep = ""))
+rsfc_inds_repl <- read.table(paste(workdir, '/replication/results/elasticnetCCA_scaled/replication-selected-features/allreplication_rsFCinds_v_CV1.csv', sep = ""))
+use_rsfc_loadings_repl <- cbind(unlist(rsfc_inds_repl),unlist(rsfc_loadings_repl))
+use_rsfc_loadings_repl <- tail(use_rsfc_loadings_repl,floor(dim(use_rsfc_loadings_repl)[1]*.1)) #take top weighted 10%
+use_rsfc_loadings_repl <- use_rsfc_loadings_repl[order(use_rsfc_loadings_repl[,1]),]
+
+#find indices of rsFC in top 1% of both subsamples
+overlap1 <- which(use_rsfc_loadings_disc[,1] %in% use_rsfc_loadings_repl[,1])
+overlap2 <- which(use_rsfc_loadings_repl[,1] %in% use_rsfc_loadings_disc[,1])
+
+overlap <- use_rsfc_loadings_disc[overlap1, 1:2]
+overlap <- cbind(overlap, use_rsfc_loadings_repl[overlap2, 1:2])
+
+#check that indices match
+table(overlap[,1] == overlap[,3])
+
+#check how many of the signs match
+sum(sign(overlap[,2]) == sign(overlap[,4]))
+
+#what percentage of the top 1% is this?
+sum(sign(overlap[,2]) == sign(overlap[,4])) / dim(use_rsfc_loadings_disc)[1]
+```
+
+
+# Exploratory analysis: enCCA with network-level rsFC features
+
+## Figure 7: fitted and imputed canonical correlations across subsamples
+```{r}
+canoncorrsnetwork1 <- read.csv(paste(workdir, '/network-level/results/stricterexclusion/allsubsets_discoveryweights_canoncorrs1.csv', sep = ""), header = FALSE)
+names(canoncorrsnetwork1) <- c("corr", "pval", "CI95lower", "CI95upper")
+canoncorrsnetwork1$CV <- 1
+canoncorrsnetwork1$Subsample <- c("Discovery", "Test", "Replication")
+
+canoncorrsnetwork2 <- read.csv(paste(workdir, '/network-level/results/stricterexclusion/allsubsets_discoveryweights_canoncorrs2.csv', sep = ""), header = FALSE)
+names(canoncorrsnetwork2) <- c("corr", "pval", "CI95lower", "CI95upper")
+canoncorrsnetwork2$CV <- 2
+canoncorrsnetwork2$Subsample <- c("Discovery", "Test", "Replication")
+
+canoncorrsnetwork3 <- read.csv(paste(workdir, '/network-level/results/stricterexclusion/allsubsets_discoveryweights_canoncorrs3.csv', sep = ""), header = FALSE)
+names(canoncorrsnetwork3) <- c("corr", "pval", "CI95lower", "CI95upper")
+canoncorrsnetwork3$CV <- 3
+canoncorrsnetwork3$Subsample <- c("Discovery", "Test", "Replication")
+
+figdata <- rbind(canoncorrsnetwork1, canoncorrsnetwork2, canoncorrsnetwork3)
+figdata[1,3] <- NA
+figdata[1,4] <- NA
+figdata[4,3] <- NA
+figdata[4,4] <- NA
+figdata[7,3] <- NA
+figdata[7,4] <- NA
+
+ggplot(figdata, aes(x=CV, y=corr, fill=Subsample, color=Subsample)) +
+  geom_bar(stat="identity", position = "dodge", alpha=0.7) +
+  scale_fill_manual(values = c("#48AEE1", "#EC6C53","#67C60F")) +
+  scale_color_manual(values = c("#48AEE1", "#EC6C53","#67C60F")) +
+  geom_errorbar( aes(x=CV, ymin=CI95lower, ymax=CI95upper), alpha=0.9, size=0.5, position = "dodge") +
+  labs(x="Canonical variate pair (signature)", y="Canonical correlation") +
+  theme_bw() + 
+  theme(panel.grid.minor = element_blank(), panel.grid.major.x = element_blank()) +
+  theme(legend.position = c(0.9, 0.85)) +
+  theme(panel.border = element_blank(), axis.line = element_line()) +
+  geom_hline(yintercept=0, linetype="dashed")
+
+
+ggsave(paste(workdir, '/figures/fig7_network-level.png', sep = ""), width = 8, height = 6, dpi = 1000)
+
+
+```
+
+
+## Figure 8: Compare symptom weights across subsamples (Discovery versus Replication)
+```{r}
+signflip <- -1
+netclin_loadings_disc <- signflip*read.table(paste(workdir, '/network-level/results/stricterexclusion/alldiscovery_clinloadings_u_CV1norm.csv', sep = ""))
+netclin_loadings_repl <- signflip*read.table(paste(workdir, '/network-level/results/stricterexclusion/allreplication_clinloadings_u_CV1norm.csv', sep = ""))
+
+cor.test(as.numeric(unlist(netclin_loadings_disc)), as.numeric(unlist(netclin_loadings_repl)))
+
+icc(cbind(netclin_loadings_disc, netclin_loadings_repl), model = "twoway", unit = "average", type = "consistency")
+
+clin_labels <- c("Obsessions", "SomethingBad", "Perfect", "Guilty", "Compulsions", "StrangeBehavior", "StrangeIdeas", "Worries")
+
+#discovery
+#clin_loadings <- netclin_loadings_disc
+#replication
+clin_loadings <- netclin_loadings_repl
+
+names(clin_loadings) <- "Loadings"
+clin_loadings$Symptoms <- factor(clin_labels, levels = rev(clin_labels), ordered = TRUE)
+levels(clin_loadings$Symptoms)
+
+if(sum(clin_loadings$Loadings>0) == 8) { #if all loadings are positive
+  clin_visual <- ggplot(data=clin_loadings, aes(x=Symptoms, y=Loadings, fill=Loadings>0)) + 
+  geom_bar(stat="identity") + 
+  scale_fill_manual(values = c("#1ABA9B")) +
+
+  ylim(-50,60) +
+  labs(x = "", y = "Loading") +
+  coord_flip() +
+  theme_classic() +
+  theme(axis.text = element_text(size = 17), axis.title = element_text(size = 17)) +
+  theme (legend.position = "none")
+} else {
+  clin_visual <- ggplot(data=clin_loadings, aes(x=Symptoms, y=Loadings, fill=Loadings>0)) + 
+    geom_bar(stat="identity") + 
+    scale_fill_manual(values = c("#E36C3F", "#1ABA9B")) +
+    ylim(-50,60) +
+    labs(x = "", y = "Loading") +
+    coord_flip() +
+    theme_classic() +
+    theme(axis.text = element_text(size = 17), axis.title = element_text(size = 17)) +
+    theme (legend.position = "none")
+}
+
+clin_visual
+ggsave(paste(workdir, '/figures/fig8-replication.png', sep = ""), width = 8, height = 6, dpi = 1000)
+
+```
+
+## Table 7: Compare network-level rsFC loadings across subsamples (Discovery versus Replication)
+```{r}
+netrsfc_loadings_disc <- signflip*read.table(paste(workdir, '/network-level/results/alldiscovery_rsFCloadings_v_CV1.csv', sep = ""))
+netrsfc_inds_disc <- read.table(paste(workdir, '/network-level/results/alldiscovery_rsFCinds_v_CV1.csv', sep = ""))
+use_netrsfc_loadings_disc <- cbind(unlist(netrsfc_inds_disc),unlist(netrsfc_loadings_disc))
+all_rsfc_loadings_disc <- use_netrsfc_loadings_disc[order(use_netrsfc_loadings_disc[,1]),]
+
+
+netrsfc_loadings_repl <- signflip*read.table(paste(workdir, '/network-level/results/allreplication_rsFCloadings_v_CV1.csv', sep = ""))
+netrsfc_inds_repl <- read.table(paste(workdir, '/network-level/results/allreplication_rsFCinds_v_CV1.csv', sep = ""))
+use_netrsfc_loadings_repl <- cbind(unlist(netrsfc_inds_repl),unlist(netrsfc_loadings_repl))
+all_rsfc_loadings_repl <- use_netrsfc_loadings_repl[order(use_netrsfc_loadings_repl[,1]),]
+
+cor.test(all_rsfc_loadings_disc[,2], all_rsfc_loadings_repl[,2])
+
+icc(cbind(all_rsfc_loadings_disc[,2], all_rsfc_loadings_repl[,2]), model = "twoway", unit = "average", type = "consistency")
+
+use_netrsfc_loadings_disc <- tail(use_netrsfc_loadings_disc,25) #take top weighted 25
+use_netrsfc_loadings_disc <- apply(use_netrsfc_loadings_disc,2, rev) #reverse order
+use_netrsfc_loadings_repl <- tail(use_netrsfc_loadings_repl,25) #take top weighted 25
+use_netrsfc_loadings_repl <- apply(use_netrsfc_loadings_repl,2, rev) #reverse order
+
+labels(connmats_raw_discovery)[[2]][use_netrsfc_loadings_disc[,1]]
+
+labels(connmats_raw_replication)[[2]][use_netrsfc_loadings_repl[,1]]
+```
+
