@@ -1,0 +1,698 @@
+---
+title: "Exploring rsfMRI Signatures of OCS Using Big Data and Machine Learning - network level connectivities"
+author: "Tracey Shi"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_float: no
+  github_document:
+    toc: yes
+  html_notebook:
+    df_print: paged
+    highlight: tango
+    number_sections: yes
+    theme: spacelab
+    toc: yes
+    toc_float: no
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    fig_width: 3
+    fig_height: 2.75
+    fig_caption: true
+---
+
+ Setup
+
+```{r}
+workdir <- '/path/to/workdir' #desktop
+
+```
+
+# Data
+
+Data is used from the Adolescent Brain Cognitive Development (ABCD) study.
+
+## ABCD Data
+
+See Main.Rmd (focuses on discovery subsample) for detailed notes. This script focuses on replication subsample and mirrors the methodology used in discovery subsample. 
+
+* Follow download instructions on Github page (https://github.com/DCAN-Labs/nda-abcd-s3-downloader) - use this Python application to download the actual connectivity matrices (downloaded for this subsample between 8-11 May 2023)
+* Matlab script format_conn_matrices.m (in Dropbox) to convert individual pconn.nii files into single subsample-wide (flattened) matrix of functional connectivities
+* This script
+* Feature selection (Matlab, permcca_elasticnet.m -- needs to be cleaned up)
+* Elastic net CCA (python 3 via jupyter notebook, elasticnetCCA_scaled.ipynb)
+
+## Inclusion criteria for discovery and test datasets (from ABCD study)
+
+Same as in Main.Rmd (focuses on discovery subsample).
+
+# Load and clean data and divide into subsets (using DCAN-Labs groups)
+
+## Load data from various files
+
+NB: If one of the files throws an error like "Error in scan.... line xxx did not have xx elements" try redownloading the file from NDA and trying again.
+
+```{r}
+# Load ABCD release 4.0 file abcd_imgincl01.txt (imaging QA inclusion/exclusion)
+imgincl01 <- read.table(paste(workdir, '/data/abcd_imgincl01.txt', sep = ""), header = TRUE)
+# drop first line of text (variable descriptions)
+imgincl01 <- imgincl01[-1, ]
+
+# Load ABCD release 4.0 file abcd_lt01.txt (age, sex)
+lt01 <- read.table(paste(workdir, '/data/abcd_lt01.txt', sep = ""), header = TRUE)
+# drop first line of text (variable descriptions)
+lt01 <- lt01[-1, ]
+
+# Load ABCD release 4.0 file abcd_mri01.txt (mri_info_deviceserialnumber)
+mri01 <- read.table(paste(workdir, '/data/abcd_mri01.txt', sep = ""), header = TRUE)
+# drop first line of text (variable descriptions)
+mri01 <- mri01[-1, ]
+
+## betnet02 (rsfMRI head motion (mean framewise displacement, network-level functional corrs))
+betnet02 <- read.table(paste(workdir, '/data/abcd_betnet02.txt', sep = ""), header = TRUE, sep = '\t')
+# drop first line of text (variable descriptions)
+betnet02 <- betnet02[-1, ]
+
+# Load CBCL parent-reported questionnaire abcd_cbcl01.txt (used to calculate CBCL-OCS)
+cbcl01 <- read.table(paste(workdir, '/data/abcd_cbcl01.txt', sep = ""), header = TRUE)
+
+```
+
+## Concatenate useful variables across ABCD files
+```{r}
+# Extract subject IDs for participants flagged for inclusion of baseline rsfMRI by ABCD QA process
+abcd_incl <- imgincl01[imgincl01$eventname == 'baseline_year_1_arm_1', ]
+paste('participants with imaging data in ABCD baseline data release: ', nrow(abcd_incl))
+abcd_incl <- abcd_incl[abcd_incl$imgincl_rsfmri_include == 1, ]
+paste('participants with baseline rsfMRI data marked for inclusion based on ABCD QA: ', nrow(abcd_incl))
+
+# Remove non-baseline data from other ABCD files, keep only relevant variables
+lt011y <- lt01[lt01$eventname == '1_year_follow_up_y_arm_1', c('subjectkey','interview_age')]
+lt012y <- lt01[lt01$eventname == '2_year_follow_up_y_arm_1', c('subjectkey','interview_age')]
+lt01 <- lt01[lt01$eventname == 'baseline_year_1_arm_1', c('subjectkey','interview_age','sex','site_id_l')]
+mri01 <- mri01[mri01$eventname == 'baseline_year_1_arm_1', c('subjectkey','mri_info_deviceserialnumber')]
+betnet02 <- betnet02[betnet02$eventname == 'baseline_year_1_arm_1', c(4, 17, 23:191)] #Average framewise displacement in mm, network-level connectivities
+indx <- sapply(betnet02, is.factor)
+betnet02t <- betnet02
+betnet02t[indx] <- lapply(betnet02[indx], function(x) as.numeric(as.character(x)))
+betnet02t <- betnet02t[!duplicated(as.list(betnet02t))]
+betnet02t[,1] <- betnet02[,1] 
+betnet02 <- betnet02t
+rm(betnet02t, indx)
+
+# double-check we are keeping the correct CBCL-OCS items
+cbcl01[1, c(18,40,41,61,82,100,101,128)] #to view column descriptions
+# drop first line of text (variable descriptions)
+cbcl01 <- cbcl01[-1, ]
+subjectkey <- cbcl01[cbcl01$eventname == 'baseline_year_1_arm_1', c('subjectkey')]
+cbcl01 <- cbcl01[cbcl01$eventname == 'baseline_year_1_arm_1', c(18,40,41,61,82,100,101,128)]
+#rename columns
+names(cbcl01) <- c('obsessions','something_bad','perfect','guilty','compulsions','strange_behavior','strange_ideas','worries')
+#convert columns to numeric from factor
+cbcl01[ ,1:8] <- apply(cbcl01[ ,1:8], 2, function(x) as.numeric(as.character(x)))
+cbcl01$cbcl_ocs_score <- rowSums(cbcl01)
+cbcl01$subjectkey <- subjectkey
+
+# Use imaging QA participant list as a template, merge in other variables
+data_abcd <- abcd_incl[ , c('subjectkey', 'imgincl_rsfmri_include')]
+data_abcd <- merge(data_abcd, lt01, by = 'subjectkey', all.x = TRUE)
+data_abcd <- merge(data_abcd, mri01, by = 'subjectkey', all.x = TRUE)
+data_abcd <- merge(data_abcd, betnet02, by = 'subjectkey', all.x = TRUE)
+data_abcd <- merge(data_abcd, cbcl01, by = 'subjectkey', all.x = TRUE)
+
+#visually check/confirm duplicates
+duplicates1 <- subset(data_abcd,duplicated(data_abcd$subjectkey))
+duplicates2 <- subset(data_abcd,duplicated(data_abcd$subjectkey, fromLast = TRUE))
+#if needed, update both copies of the duplicate entry to have correct mri_info_deviceserialnumber
+# for(d in 1:nrow(duplicates1)) {
+#   goodinfo <- as.factor(paste(duplicates1$mri_info_deviceserialnumber[d], duplicates2$mri_info_deviceserialnumber[d], sep=''))
+#   data_abcd$mri_info_deviceserialnumber[as.numeric(row.names(duplicates1)[d])] <- goodinfo
+#   data_abcd$mri_info_deviceserialnumber[as.numeric(row.names(duplicates2)[d])] <- goodinfo
+# }
+# data_abcd <- data_abcd[!duplicated(data_abcd$subjectkey), ]
+#rm(d)
+rm(duplicates1, duplicates2)
+```
+
+Review variables for missingness
+```{r}
+# confirm no missing values for mri_info_deviceserialnumber
+nrow(data_abcd[data_abcd$mri_info_deviceserialnumber=='',])
+
+#no other variables have missing values
+nrow(data_abcd[data_abcd$imgincl_rsfmri_include=='',]) #can't be missing as participant list was defined off this
+nrow(data_abcd[data_abcd$site=='',])
+nrow(data_abcd[data_abcd$interview_age=='',])
+nrow(data_abcd[data_abcd$sex=='',])
+
+nrow(data_abcd[data_abcd$cbcl_ocs_score=='',]) #some of these are missing in data releases 3.0 (4 missing) and 4.0 (5 missing)
+table(data_abcd$cbcl_ocs_score)
+
+
+```
+
+## Format to combine with DCAN-Labs data
+
+```{r}
+#Reformat subjectkey to match DCAN participant ID formatting, add as new field 'participant_id'
+participant_id <- as.character(data_abcd$subjectkey)
+participant_id <- paste("sub-", participant_id, sep = "")
+participant_id <- sub("_", "", participant_id)
+participant_id <- as.data.frame(participant_id)
+data_abcd <- cbind(data_abcd, participant_id)
+rm(participant_id)
+
+#Divide into discovery and test sets, format, and save as a subject list for DCAN downloader
+#load participants.tsv from DCAN lab
+participants_dcan <- read.table(paste(workdir,'/scripts/nda-abcd-s3-downloader-master/Collection_Documents/participants_v1.0.0/participants.tsv', sep = ""), header = TRUE)
+
+#keep only baseline data, participant ID and matched_group variables
+participants_dcan <- participants_dcan[participants_dcan$session_id == 'ses-baselineYear1Arm1', c('participant_id', 'matched_group','race_ethnicity','handedness')]
+
+subject_list_merged <- merge(data_abcd, participants_dcan, by = 'participant_id', all.x = TRUE)
+
+# remove duplicates
+subject_list_merged <- subject_list_merged[!duplicated(subject_list_merged$participant_id), ]
+
+subject_list_discovery <- subject_list_merged[subject_list_merged$matched_group == 1, ]
+subject_list_discovery <- subject_list_discovery[!is.na(subject_list_discovery$participant_id), ] #remove rows with all NAs
+#write.table(subject_list_discovery[ , c("participant_id")], paste(workdir, '/scripts/nda-abcd-s3-downloader-master/subject_list_discovery.txt', sep = ""), quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+subject_list_test <- subject_list_merged[subject_list_merged$matched_group == 3, ]
+subject_list_test <- subject_list_test[!is.na(subject_list_test$participant_id), ] #remove rows with all NAs
+#write.table(subject_list_test[ , c("participant_id")], paste(workdir, '/scripts/nda-abcd-s3-downloader-master/subject_list_test.txt', sep = ""), quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+subject_list_replication <- subject_list_merged[subject_list_merged$matched_group == 2, ]
+subject_list_replication <- subject_list_replication[!is.na(subject_list_replication$participant_id), ] #remove rows with all NAs
+#write.table(subject_list_replication[ , c("participant_id")], paste(workdir, '/scripts/nda-abcd-s3-downloader-master/subject_list_replication.txt', sep = ""), quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+# Clean up memory
+rm(imgincl01, lt01, mri01, cbcl01, betnet02, participants_dcan, abcd_incl, subjectkey)
+
+# Simple stats
+table(subject_list_discovery$imgincl_rsfmri_incl)
+table(subject_list_test$imgincl_rsfmri_incl)
+table(subject_list_replication$imgincl_rsfmri_incl)
+
+table(subject_list_discovery$sex)[1:2]
+table(subject_list_test$sex)
+chisq.test(subject_list_merged$matched_group, subject_list_merged$sex)
+
+mean(as.numeric(as.character((subject_list_discovery$interview_age))), na.rm = TRUE)
+sd(as.numeric(as.character((subject_list_discovery$interview_age))), na.rm = TRUE)
+mean(as.numeric(as.character((subject_list_replication$interview_age))), na.rm = TRUE)
+sd(as.numeric(as.character((subject_list_replication$interview_age))), na.rm = TRUE)
+t.test(as.numeric(as.character((subject_list_discovery$interview_age))),as.numeric(as.character((subject_list_replication$interview_age))))
+
+mean(as.numeric(as.character((subject_list_discovery$cbcl_ocs_score))), na.rm = TRUE)
+sd(as.numeric(as.character((subject_list_discovery$cbcl_ocs_score))), na.rm = TRUE)
+mean(as.numeric(as.character((subject_list_replication$cbcl_ocs_score))), na.rm = TRUE)
+sd(as.numeric(as.character((subject_list_replication$cbcl_ocs_score))), na.rm = TRUE)
+t.test(as.numeric(as.character((subject_list_discovery$cbcl_ocs_score))),as.numeric(as.character((subject_list_replication$cbcl_ocs_score))))
+
+table(subject_list_discovery$race_ethnicity)
+table(subject_list_replication$race_ethnicity)
+
+```
+
+## Extract clinical data and covariates (demographic, administrative, head motion)
+
+Clinical data: 8 individual item scores from CBCL comprising the CBCL-OCS scale
+Covariates: Age, sex, race, site
+```{r}
+#merge with covariates and clinical data file
+data_discovery <- subject_list_discovery
+data_test <- subject_list_test
+data_replication <- subject_list_replication
+
+#check/reformat all variables to appropriate class
+#age (numeric)
+data_discovery$interview_age <- as.numeric(as.character(data_discovery$interview_age))
+data_test$interview_age <- as.numeric(as.character(data_test$interview_age))
+data_replication$interview_age <- as.numeric(as.character(data_replication$interview_age))
+
+data_discovery$scaled_age <- scale(data_discovery$interview_age) #standardize variable
+scale_center <- attr(data_discovery$scaled_age,"scaled:center")
+scale_scale <- attr(data_discovery$scaled_age,"scaled:scale")
+data_test$scaled_age <- scale(data_test$interview_age, center = scale_center, scale = scale_scale) #apply same scaling to test subset
+data_replication$scaled_age <- scale(data_replication$interview_age, center = scale_center, scale = scale_scale) #apply same scaling to test subset
+
+data_discovery$scaled_age <- as.numeric(as.character(data_discovery$scaled_age))
+data_test$scaled_age <- as.numeric(as.character(data_test$scaled_age))
+data_replication$scaled_age <- as.numeric(as.character(data_replication$scaled_age))
+class(data_discovery$interview_age)
+class(data_discovery$scaled_age)
+class(data_test$interview_age)
+class(data_test$scaled_age)
+class(data_replication$interview_age)
+class(data_replication$scaled_age)
+
+#sex (factor)
+class(data_discovery$sex)
+class(data_test$sex)
+class(data_replication$sex)
+
+#site (factor)
+class(data_discovery$site_id_l)
+levels(data_discovery$site_id_l)
+data_discovery$site_id_l <- droplevels(data_discovery$site_id_l) #drop unused levels
+levels(data_discovery$site_id_l)
+
+class(data_test$site_id_l)
+levels(data_test$site_id_l)
+data_test$site_id_l <- droplevels(data_test$site_id_l) #drop unused levels - NB there is no site 22 in test subset (this subset is much smaller)
+levels(data_test$site_id_l)
+
+class(data_replication$site_id_l)
+levels(data_replication$site_id_l)
+data_replication$site_id_l <- droplevels(data_replication$site_id_l) #drop unused levels
+levels(data_replication$site_id_l)
+
+#scanner (factor)
+class(data_discovery$mri_info_deviceserialnumber)
+table(data_discovery$mri_info_deviceserialnumber)
+data_discovery$mri_info_deviceserialnumber <- droplevels(data_discovery$mri_info_deviceserialnumber)
+levels(data_discovery$mri_info_deviceserialnumber)
+
+class(data_test$mri_info_deviceserialnumber)
+table(data_test$mri_info_deviceserialnumber)
+data_test$mri_info_deviceserialnumber <- droplevels(data_test$mri_info_deviceserialnumber) #drop unused levels - NB there are some scanners not represented in test subset (this subset is much smaller)
+levels(data_test$mri_info_deviceserialnumber) 
+
+class(data_replication$mri_info_deviceserialnumber)
+table(data_replication$mri_info_deviceserialnumber)
+data_replication$mri_info_deviceserialnumber <- droplevels(data_replication$mri_info_deviceserialnumber)
+levels(data_replication$mri_info_deviceserialnumber)
+
+#race/ethnicity (factor)
+class(data_discovery$race_ethnicity) #defaults to integer
+data_discovery$race_ethnicity <- as.factor(data_discovery$race_ethnicity)
+class(data_discovery$race_ethnicity)
+levels(data_discovery$race_ethnicity)
+table(data_discovery$race_ethnicity)
+data_discovery$race_ethnicity[data_discovery$race_ethnicity=='888'] <- NA #remove participants coded as 888 (5 in this subset)
+data_discovery$race_ethnicity <- droplevels(data_discovery$race_ethnicity)
+missingraceeth_discovery <- which(is.na(data_discovery$race_ethnicity))
+levels(data_discovery$race_ethnicity)
+
+class(data_test$race_ethnicity) #defaults to integer
+data_test$race_ethnicity <- as.factor(data_test$race_ethnicity)
+class(data_test$race_ethnicity)
+levels(data_test$race_ethnicity)
+table(data_test$race_ethnicity)
+data_test$race_ethnicity[data_test$race_ethnicity=='888'] <- NA #remove participants coded as 888 (1 in this subset)
+data_test$race_ethnicity <- droplevels(data_test$race_ethnicity)
+missingraceeth_test <- which(is.na(data_test$race_ethnicity))
+levels(data_test$race_ethnicity)
+
+class(data_replication$race_ethnicity) #defaults to integer
+data_replication$race_ethnicity <- as.factor(data_replication$race_ethnicity)
+class(data_replication$race_ethnicity)
+levels(data_replication$race_ethnicity)
+table(data_replication$race_ethnicity)
+data_replication$race_ethnicity[data_replication$race_ethnicity=='888'] <- NA #remove participants coded as 888 (7 in this subset)
+data_replication$race_ethnicity <- droplevels(data_replication$race_ethnicity)
+missingraceeth_replication <- which(is.na(data_replication$race_ethnicity))
+levels(data_replication$race_ethnicity)
+
+#mean motion (numeric)
+data_discovery$rsfmri_c_ngd_meanmotion <- as.numeric(as.character(data_discovery$rsfmri_c_ngd_meanmotion))
+data_discovery$scaled_motion <- scale(data_discovery$rsfmri_c_ngd_meanmotion) #standardize variable
+scale_center_mot <- attr(data_discovery$scaled_motion,"scaled:center")
+scale_scale_mot <- attr(data_discovery$scaled_motion,"scaled:scale")
+data_discovery$scaled_motion <- as.numeric(as.character(data_discovery$scaled_motion))
+class(data_discovery$scaled_motion)
+
+data_test$rsfmri_c_ngd_meanmotion <- as.numeric(as.character(data_test$rsfmri_c_ngd_meanmotion))
+data_test$scaled_motion <- scale(data_test$rsfmri_c_ngd_meanmotion, center = scale_center_mot, scale = scale_scale_mot) #apply same scaling to test subset
+data_test$scaled_motion <- as.numeric(as.character(data_test$scaled_motion))
+class(data_test$scaled_motion)
+
+data_replication$rsfmri_c_ngd_meanmotion <- as.numeric(as.character(data_replication$rsfmri_c_ngd_meanmotion))
+data_replication$scaled_motion <- scale(data_replication$rsfmri_c_ngd_meanmotion, center = scale_center_mot, scale = scale_scale_mot) #apply same scaling to replication subset
+data_replication$scaled_motion <- as.numeric(as.character(data_replication$scaled_motion))
+class(data_replication$scaled_motion)
+
+#clinical data (CBCL-OCS individual items)
+cbcl_ocs_discovery <- data_discovery[,c('obsessions','something_bad','perfect','guilty','compulsions','strange_behavior','strange_ideas','worries')]
+cbcl_ocs_test <- data_test[,c('obsessions','something_bad','perfect','guilty','compulsions','strange_behavior','strange_ideas','worries')]
+cbcl_ocs_replication <- data_replication[,c('obsessions','something_bad','perfect','guilty','compulsions','strange_behavior','strange_ideas','worries')]
+
+#covariates
+covariates_discovery <- data_discovery[,c('interview_age','scaled_age','sex','site_id_l','mri_info_deviceserialnumber','race_ethnicity','rsfmri_c_ngd_meanmotion','scaled_motion')]
+covariates_test <- data_test[,c('interview_age','scaled_age','sex','site_id_l','mri_info_deviceserialnumber','race_ethnicity','rsfmri_c_ngd_meanmotion','scaled_motion')]
+covariates_replication <- data_replication[,c('interview_age','scaled_age','sex','site_id_l','mri_info_deviceserialnumber','race_ethnicity','rsfmri_c_ngd_meanmotion','scaled_motion')]
+
+#connectivities
+connmats_raw_discovery <- data_discovery[,c(9:99)]
+connmats_raw_test <- data_test[,c(9:99)]
+connmats_raw_replication <- data_replication[,c(9:99)]
+
+rm(subject_list_merged, subject_list_discovery)
+rm(subject_list_replication, subject_list_test)
+```
+
+```{r}
+#drop the participants without race/ethnicity data from each data subset
+#NB: this is done manually here because setting 'na.action = na.exclude' doesn't work for zeroinfl function
+cbcl_ocs_discovery <- cbcl_ocs_discovery[c(-missingraceeth_discovery),]
+covariates_discovery <- covariates_discovery[c(-missingraceeth_discovery),]
+connmats_raw_discovery <- connmats_raw_discovery[c(-missingraceeth_discovery),]
+
+cbcl_ocs_test <- cbcl_ocs_test[c(-missingraceeth_test),]
+covariates_test <- covariates_test[c(-missingraceeth_test),]
+connmats_raw_test <- connmats_raw_test[c(-missingraceeth_test),]
+
+cbcl_ocs_replication <- cbcl_ocs_replication[c(-missingraceeth_replication),]
+covariates_replication <- covariates_replication[c(-missingraceeth_replication),]
+connmats_raw_replication <- connmats_raw_replication[c(-missingraceeth_replication),]
+
+data_discovery <- data_discovery[c(-missingraceeth_discovery),]
+data_test <- data_test[c(-missingraceeth_test),]
+data_replication <- data_replication[c(-missingraceeth_replication),]
+
+# check for NA values
+any(is.na(cbcl_ocs_discovery))
+any(is.na(cbcl_ocs_test))
+any(is.na(cbcl_ocs_replication))
+any(is.na(connmats_raw_discovery))
+any(is.na(connmats_raw_test))
+any(is.na(connmats_raw_replication))
+any(is.na(covariates_discovery))
+any(is.na(covariates_test))
+any(is.na(covariates_replication))
+
+# remove NA values -- there is probably a better way to do this
+missingcbclocs <- which(is.na(cbcl_ocs_replication))[1:2]
+cbcl_ocs_replication <- cbcl_ocs_replication[c(-missingcbclocs),]
+covariates_replication <- covariates_replication[c(-missingcbclocs),]
+connmats_raw_replication <- connmats_raw_replication[c(-missingcbclocs),]
+data_replication <- data_replication[c(-missingcbclocs),]
+which(is.na(cbcl_ocs_replication))
+cbcl_ocs_replication <- cbcl_ocs_replication[c(-2201),]
+covariates_replication <- covariates_replication[c(-2201),]
+connmats_raw_replication <- connmats_raw_replication[c(-2201),]
+data_replication <- data_replication[c(-2201),]
+any(is.na(cbcl_ocs_replication))
+
+which(is.na(connmats_raw_discovery))
+cbcl_ocs_discovery <- cbcl_ocs_discovery[c(-1065),]
+covariates_discovery <- covariates_discovery[c(-1065),]
+connmats_raw_discovery <- connmats_raw_discovery[c(-1065),]
+data_discovery <- data_discovery[c(-1065),]
+which(is.na(connmats_raw_discovery))
+cbcl_ocs_discovery <- cbcl_ocs_discovery[c(-2603),]
+covariates_discovery <- covariates_discovery[c(-2603),]
+connmats_raw_discovery <- connmats_raw_discovery[c(-2603),]
+data_discovery <- data_discovery[c(-2603),]
+which(is.na(connmats_raw_discovery))
+cbcl_ocs_discovery <- cbcl_ocs_discovery[c(-2570),]
+covariates_discovery <- covariates_discovery[c(-2570),]
+connmats_raw_discovery <- connmats_raw_discovery[c(-2570),]
+data_discovery <- data_discovery[c(-2570),]
+which(is.na(connmats_raw_discovery))
+cbcl_ocs_discovery <- cbcl_ocs_discovery[c(-2699),]
+covariates_discovery <- covariates_discovery[c(-2699),]
+connmats_raw_discovery <- connmats_raw_discovery[c(-2699),]
+data_discovery <- data_discovery[c(-2699),]
+which(is.na(connmats_raw_discovery))
+cbcl_ocs_discovery <- cbcl_ocs_discovery[c(-223),]
+covariates_discovery <- covariates_discovery[c(-223),]
+connmats_raw_discovery <- connmats_raw_discovery[c(-223),]
+data_discovery <- data_discovery[c(-223),]
+any(is.na(connmats_raw_discovery))
+
+which(is.na(connmats_raw_replication))
+cbcl_ocs_replication <- cbcl_ocs_replication[c(-1012),]
+covariates_replication <- covariates_replication[c(-1012),]
+connmats_raw_replication <- connmats_raw_replication[c(-1012),]
+data_replication <- data_replication[c(-1012),]
+which(is.na(connmats_raw_replication))
+cbcl_ocs_replication <- cbcl_ocs_replication[c(-837),]
+covariates_replication <- covariates_replication[c(-837),]
+connmats_raw_replication <- connmats_raw_replication[c(-837),]
+data_replication <- data_replication[c(-837),]
+which(is.na(connmats_raw_replication))
+cbcl_ocs_replication <- cbcl_ocs_replication[c(-1666),]
+covariates_replication <- covariates_replication[c(-1666),]
+connmats_raw_replication <- connmats_raw_replication[c(-1666),]
+data_replication <- data_replication[c(-1666),]
+which(is.na(connmats_raw_replication))
+cbcl_ocs_replication <- cbcl_ocs_replication[c(-2994),]
+covariates_replication <- covariates_replication[c(-2994),]
+connmats_raw_replication <- connmats_raw_replication[c(-2994),]
+data_replication <- data_replication[c(-2994),]
+which(is.na(connmats_raw_replication))
+cbcl_ocs_replication <- cbcl_ocs_replication[c(-3191),]
+covariates_replication <- covariates_replication[c(-3191),]
+connmats_raw_replication <- connmats_raw_replication[c(-3191),]
+data_replication <- data_replication[c(-3191),]
+which(is.na(connmats_raw_replication))
+cbcl_ocs_replication <- cbcl_ocs_replication[c(-4653),]
+covariates_replication <- covariates_replication[c(-4653),]
+connmats_raw_replication <- connmats_raw_replication[c(-4653),]
+data_replication <- data_replication[c(-4653),]
+which(is.na(connmats_raw_replication))
+cbcl_ocs_replication <- cbcl_ocs_replication[c(-353),]
+covariates_replication <- covariates_replication[c(-353),]
+connmats_raw_replication <- connmats_raw_replication[c(-353),]
+data_replication <- data_replication[c(-353),]
+which(is.na(connmats_raw_replication))
+cbcl_ocs_replication <- cbcl_ocs_replication[c(-2871),]
+covariates_replication <- covariates_replication[c(-2871),]
+connmats_raw_replication <- connmats_raw_replication[c(-2871),]
+data_replication <- data_replication[c(-2871),]
+any(is.na(connmats_raw_replication))
+
+```
+
+## Save raw clinical, rs-FC, and covariates data
+```{r eval=FALSE, include=FALSE}
+rm(data_abcd, missingraceeth_discovery, missingraceeth_test, missingraceeth_replication, workdir, scale_center, scale_scale, scale_center_mot, scale_scale_mot)
+rm(lt011y, lt012y)
+save.image("~/Desktop/OCS_bigdata_ML_local/FINAL/network-level/main_networklevel.RData")
+
+
+#save raw connmats
+#write.csv(connmats_raw_test,file='/Users/marshlab2/Desktop/OCS_bigdata_ML_local/data/test/connmats_test_RAW.csv', row.names = FALSE, col.names = FALSE)
+#write.csv(connmats_raw_replication,file='/Users/marshlab2/Desktop/OCS_bigdata_ML_local/data/test/connmats_replicationapplied_RAW.csv', row.names = FALSE, col.names = FALSE)
+```
+
+## Create partitions for cross-validated hyperparameter optimization
+```{r}
+set.seed(12345) # set seed for reproducibility
+
+# set multiple k-folds cross-validation parameters
+kfolds_k <- 10
+kfolds_times <- 1
+
+paste("number of k-folds repetitions: ", kfolds_times) 
+paste("number of cross-validation folds per rep: ", kfolds_k)
+
+library(caret)
+
+partitions <- createMultiFolds((1:dim(cbcl_ocs_discovery)[1]), k = kfolds_k, times = kfolds_times)
+# partitions contains row indices of participants for each cross-validation-training set
+
+set.seed(111)
+partitions2 <- createMultiFolds((1:dim(cbcl_ocs_discovery)[1]), k = kfolds_k, times = 1)
+```
+
+Store indices of cross-validation partitions for Matlab/python
+```{r eval=FALSE, include=FALSE}
+#cross-validation partitions
+write.csv(partitions2$Fold01.Rep1, paste(workdir, '/data/networklevel/partitions2_rep01fold01.csv', sep=""), row.names = FALSE, col.names = FALSE)
+write.csv(partitions2$Fold02.Rep1, paste(workdir, '/data/networklevel/partitions2_rep01fold02.csv', sep=""), row.names = FALSE, col.names = FALSE)
+write.csv(partitions2$Fold03.Rep1, paste(workdir, '/data/networklevel/partitions2_rep01fold03.csv', sep=""), row.names = FALSE, col.names = FALSE)
+write.csv(partitions2$Fold04.Rep1, paste(workdir, '/data/networklevel/partitions2_rep01fold04.csv', sep=""), row.names = FALSE, col.names = FALSE)
+write.csv(partitions2$Fold05.Rep1, paste(workdir, '/data/networklevel/partitions2_rep01fold05.csv', sep=""), row.names = FALSE, col.names = FALSE)
+write.csv(partitions2$Fold06.Rep1, paste(workdir, '/data/networklevel/partitions2_rep01fold06.csv', sep=""), row.names = FALSE, col.names = FALSE)
+write.csv(partitions2$Fold07.Rep1, paste(workdir, '/data/networklevel/partitions2_rep01fold07.csv', sep=""), row.names = FALSE, col.names = FALSE)
+write.csv(partitions2$Fold08.Rep1, paste(workdir, '/data/networklevel/partitions2_rep01fold08.csv', sep=""), row.names = FALSE, col.names = FALSE)
+write.csv(partitions2$Fold09.Rep1, paste(workdir, '/data/networklevel/partitions2_rep01fold09.csv', sep=""), row.names = FALSE, col.names = FALSE)
+write.csv(partitions2$Fold10.Rep1, paste(workdir, '/data/networklevel/partitions2_rep01fold10.csv', sep=""), row.names = FALSE, col.names = FALSE)
+
+
+```
+
+
+
+
+
+## Regress out covariates and visualize rsFC features
+```{r}
+#initialize storage
+#discovery model 
+rsFC_features <- array(numeric(), dim(connmats_raw_discovery)) #initialize array for rsFC features (after covariates are regressed out)
+rsFC_covariate_coeffs <- array(numeric(), c(36, ncol(connmats_raw_discovery)))
+rsFC_feat_normaltest <- array(numeric(), c(2, ncol(connmats_raw_discovery)))
+#apply discovery fits to test subset
+rsFC_features_test <- array(numeric(), dim(connmats_raw_test)) #initialize array for rsFC features (after covariates are regressed out)
+rsFC_feat_normaltest_test <- array(numeric(), c(2, ncol(connmats_raw_test)))
+rsFC_features_replication <- array(numeric(), dim(connmats_raw_replication)) #initialize array for rsFC features (after covariates are regressed out)
+rsFC_feat_normaltest_replication <- array(numeric(), c(2, ncol(connmats_raw_replication)))
+
+tempdata_test <- covariates_test[, c("scaled_age", "sex", "mri_info_deviceserialnumber", "race_ethnicity", "scaled_motion")]
+tempdata_replication <- covariates_replication[, c("scaled_age", "sex", "mri_info_deviceserialnumber", "race_ethnicity", "scaled_motion")]
+#for each feature, fit in discovery subset and then apply to test subset
+for(i in 1:ncol(connmats_raw_discovery)) {
+  tempdata_discovery <- cbind(connmats_raw_discovery[, i], covariates_discovery[, c("scaled_age", "sex", "mri_info_deviceserialnumber", "race_ethnicity", "scaled_motion")])
+  names(tempdata_discovery)[1] <- "connfeat"
+  model_i <- lm(connfeat ~ scaled_age + sex + mri_info_deviceserialnumber + race_ethnicity + scaled_motion, data = tempdata_discovery, na.action = na.exclude)
+  rsFC_features[, i] <- residuals(model_i) #pads residuals with NA where predictor vars have NA values
+  rsFC_covariate_coeffs[, i] <- model_i$coefficients
+  test_fits <- predict(model_i, tempdata_test)
+  rsFC_features_test[, i] <- connmats_raw_test[, i] - test_fits #test subset residuals = actual minus predicted
+  replication_fits <- predict(model_i, tempdata_replication)
+  rsFC_features_replication[, i] <- connmats_raw_replication[, i] - replication_fits #replication subset residuals = actual minus predicted
+ 
+  #Shapiro-Wilk tests for normality of residuals (i.e. the rsFC feature after covariate regression)
+  # p>.05 means data are not significantly different from normal distribution
+  shapiro_result <- shapiro.test(rsFC_features[, i])
+  rsFC_feat_normaltest[1, i] <- shapiro_result$statistic
+  rsFC_feat_normaltest[2, i] <- shapiro_result$p.value
+  shapiro_result_test <- shapiro.test(rsFC_features_test[, i])
+  rsFC_feat_normaltest_test[1, i] <- shapiro_result_test$statistic
+  rsFC_feat_normaltest_test[2, i] <- shapiro_result_test$p.value
+  shapiro_result_replication <- shapiro.test(rsFC_features_replication[, i])
+  rsFC_feat_normaltest_replication[1, i] <- shapiro_result_replication$statistic
+  rsFC_feat_normaltest_replication[2, i] <- shapiro_result_replication$p.value
+
+}
+
+names(rsFC_feat_normaltest) <- c('statistic','pval')
+hist(rsFC_feat_normaltest[2, ], main = paste('Histogram of Shapiro-Wilk test p-values for each rsFC feature - discovery subset'), xlab = 'p-value')
+names(rsFC_feat_normaltest_test) <- c('statistic','pval')
+hist(rsFC_feat_normaltest_test[2, ], main = paste('Histogram of Shapiro-Wilk test p-values for each rsFC feature - test subset'), xlab = 'p-value')
+names(rsFC_feat_normaltest_replication) <- c('statistic','pval')
+hist(rsFC_feat_normaltest_replication[2, ], main = paste('Histogram of Shapiro-Wilk test p-values for each rsFC feature - replication subset'), xlab = 'p-value')
+
+#check for NA values
+any(is.na(rsFC_features))
+any(is.na(rsFC_features_test))
+any(is.na(rsFC_features_replication))
+
+#standardize (mean center, scale by SD)
+rsFC_features_scaled <- scale(rsFC_features, center = TRUE, scale = TRUE)
+scale_center <- attr(rsFC_features_scaled,"scaled:center")
+scale_scale <- attr(rsFC_features_scaled,"scaled:scale")
+rsFC_features_scaled_test <- scale(rsFC_features_test, center = scale_center, scale = scale_scale) #apply same scaling to test subset
+rsFC_features_scaled_replication <- scale(rsFC_features_replication, center = scale_center, scale = scale_scale) #apply same scaling to replication subset
+
+#export the rsFC features for each subset
+write.csv(rsFC_features_scaled, '/Users/marshlab2/Desktop/OCS_bigdata_ML_local/data/networklevel/rsFC_features_scaled_discovery.csv', row.names = FALSE, col.names = FALSE)
+write.csv(rsFC_features_scaled_test, '/Users/marshlab2/Desktop/OCS_bigdata_ML_local/data/networklevel/rsFC_features_scaled_test.csv', row.names = FALSE, col.names = FALSE)
+write.csv(rsFC_features_scaled_replication, '/Users/marshlab2/Desktop/OCS_bigdata_ML_local/data/networklevel/rsFC_features_scaled_replication.csv', row.names = FALSE, col.names = FALSE)
+
+#write.table(rsFC_features, paste(workdir, '/data/ML_features/rsFC_features_discovery.txt', sep = ""), col.names=NA)
+#write.table(rsFC_covariate_coeffs, paste(workdir, '/data/ML_features/rsFC_covariate_coeffs_discovery.txt', sep = ""), col.names=NA)
+#write.table(rsFC_feat_normaltest, paste(workdir, '/data/ML_features/rsFC_feat_normaltest_discovery.txt', sep = ""), col.names=NA)
+```
+
+## Regress out covariates and visualize clinical features
+```{r}
+library(pscl)
+
+class(cbcl_ocs_discovery$obsessions)
+class(cbcl_ocs_test$obsessions)
+class(cbcl_ocs_replication$obsessions)
+# view cross tabulated data
+table(cbcl_ocs_test[,8], covariates_test$race_ethnicity)
+
+clin_features <- array(numeric(), dim(cbcl_ocs_discovery)) #initialize array for rsFC features (after covariates are regressed out)
+clin_feat_normaltest <- array(numeric(), c(2, ncol(cbcl_ocs_discovery)))
+
+clin_features_test <- array(numeric(), dim(cbcl_ocs_test)) #initialize array for rsFC features (after covariates are regressed out)
+clin_feat_normaltest_test <- array(numeric(), c(2, ncol(cbcl_ocs_test)))
+
+clin_features_replication <- array(numeric(), dim(cbcl_ocs_replication)) #initialize array for rsFC features (after covariates are regressed out)
+clin_feat_normaltest_replication <- array(numeric(), c(2, ncol(cbcl_ocs_replication)))
+
+tempdata_test <- covariates_test[, c("scaled_age", "sex", "race_ethnicity")]
+tempdata_replication <- covariates_replication[, c("scaled_age", "sex", "race_ethnicity")]
+for(i in 1:ncol(cbcl_ocs_discovery)) {
+  tempdata_discovery <- cbind(cbcl_ocs_discovery[, i], covariates_discovery[, c("scaled_age", "sex", "race_ethnicity")])
+  names(tempdata_discovery)[1] <- "cbcl_ocs_item"
+  model_i <- zeroinfl(cbcl_ocs_item ~ scaled_age + sex + race_ethnicity, data = tempdata_discovery, dist = "poisson", na.action = na.exclude)
+  clin_features[, i] <- model_i$residuals
+  test_fits <- predict(model_i, tempdata_test)
+  clin_features_test[, i] <- cbcl_ocs_test[, i] - test_fits #test subset residuals = actual minus predicted
+  replication_fits <- predict(model_i, tempdata_replication)
+  clin_features_replication[, i] <- cbcl_ocs_replication[, i] - replication_fits #test subset residuals = actual minus predicted
+ 
+  #Shapiro-Wilk test for normality of residuals (i.e. the rsFC feature after covariate regression)
+  # p>.05 means data are not significantly different from normal distribution
+  shapiro_result <- shapiro.test(clin_features[, i])
+  clin_feat_normaltest[1, i] <- shapiro_result$statistic
+  clin_feat_normaltest[2, i] <- shapiro_result$p.value
+  shapiro_result <- shapiro.test(clin_features_test[, i])
+  clin_feat_normaltest_test[1, i] <- shapiro_result$statistic
+  clin_feat_normaltest_test[2, i] <- shapiro_result$p.value
+  shapiro_result <- shapiro.test(clin_features_replication[, i])
+  clin_feat_normaltest_replication[1, i] <- shapiro_result$statistic
+  clin_feat_normaltest_replication[2, i] <- shapiro_result$p.value
+
+}
+
+names(clin_feat_normaltest) <- c('statistic','pval')
+names(clin_feat_normaltest_test) <- c('statistic','pval')
+names(clin_feat_normaltest_replication) <- c('statistic','pval')
+
+#visualize - note that the clinical features after covariate regression are nowhere close to normally distributed
+hist(clin_features[, 1])
+hist(clin_features_test[, 1])
+hist(clin_features_replication[, 1])
+
+hist(clin_features[, 2])
+hist(clin_features[, 3])
+hist(clin_features[, 4])
+hist(clin_features[, 5])
+hist(clin_features[, 6])
+hist(clin_features[, 7])
+hist(clin_features[, 8])
+
+any(is.na(clin_features))
+any(is.na(clin_features_test))
+any(is.na(clin_features_replication))
+
+#standardize (mean center, scale by SD)
+clin_features_scaled <- scale(clin_features, center = TRUE, scale = TRUE)
+scale_center <- attr(clin_features_scaled,"scaled:center")
+scale_scale <- attr(clin_features_scaled,"scaled:scale")
+clin_features_scaled_test <- scale(clin_features_test, center = scale_center, scale = scale_scale) #apply same scaling to test subset
+clin_features_scaled_replication <- scale(clin_features_replication, center = scale_center, scale = scale_scale) #apply same scaling to replication subset
+
+#export the features for all subsets
+write.csv(clin_features_scaled, '/Users/marshlab2/Desktop/OCS_bigdata_ML_local/data/networklevel/clin_features_scaled_discovery.csv', row.names = FALSE, col.names = FALSE)
+write.csv(clin_features_scaled_test, '/Users/marshlab2/Desktop/OCS_bigdata_ML_local/data/networklevel/clin_features_scaled_test.csv', row.names = FALSE, col.names = FALSE)
+write.csv(clin_features_scaled_replication, '/Users/marshlab2/Desktop/OCS_bigdata_ML_local/data/networklevel/clin_features_scaled_replication.csv', row.names = FALSE, col.names = FALSE)
+
+#write.table(clin_covariate_coeffs_count, paste(workdir, '/data/ML_features/clin_covariate_coeffs_count_discovery.txt', sep = ""), col.names=NA)
+#write.table(clin_covariate_coeffs_zero, paste(workdir, '/data/ML_features/clin_covariate_coeffs_zero_discovery.txt', sep = ""), col.names=NA)
+#write.table(clin_feat_normaltest, paste(workdir, '/data/ML_features/clin_feat_normaltest_discovery.txt', sep = ""), col.names=NA)
+
+```
+
+Clean up workspace
+```{r}
+rm(cbcl_ocs_replication, clin_covariate_coeffs_count, clin_covariate_coeffs_zero, clin_feat_normaltest)
+rm(connmats_raw_replication, rsFC_covariate_coeffs, rsFC_feat_normaltest)
+rm(covariates_replication, data_abcd, data_replication, matlab_subject_list_replication, model_i, shapiro_result)
+rm(d, goodinfo, i, missingraceeth)
+```
+
+
+
+Save R workspace for continued work in R
+
+
+
+
+
+
+
+
+
