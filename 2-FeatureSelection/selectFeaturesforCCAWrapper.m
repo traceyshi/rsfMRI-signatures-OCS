@@ -1,7 +1,6 @@
 % Select features for use in CCA
 
 %% SETUP
-%NYSPI desktop
 datadir = '/path/to/data/';
 scriptdir = '/path/to/scripts/FeatureSelection';
 addpath(scriptdir)
