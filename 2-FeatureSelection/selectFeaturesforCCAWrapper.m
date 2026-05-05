@@ -27,17 +27,13 @@ CV_feats = cell(length(partitions),1); %initialize empty cell array
 for p = 1:length(partitions)
     disp(partitions(p).name)
     thisSubset = table2array(readtable(partitions(p).name));
-    %CV_feats{p} = selectFeatsSpearmanThresh(fullresidY(thisSubset,:), fullresidX(thisSubset,:), Spearmanthresh);
     %CV_feats{p} = selectFeatsPearsonNum(fullresidY(thisSubset,:), fullresidX(thisSubset,:), num_feats);
     CV_feats{p} = selectFeatsPearsonThresh(Yreg(thisSubset,:), X(thisSubset,:), Pearsonthresh);
 end
 cd('..')
 
 % Export selected features
-%writecell(CV_feats,'crossValidFeatsPearsonThresh05.csv')
-%writematrix(alldiscovery_selectedFeatsSpearman,'alldiscovery_selectedFeatsPearson05.csv')
-%writecell(CV_feats,'crossValidFeatsSpearman.csv')
-%writematrix(alldiscovery_selectedFeatsSpearman,'alldiscovery_selectedFeatsSpearman.csv')
+writecell(CV_feats,'crossValidFeatsPearsonThresh05.csv')
 
 % Tabulate most stable features across subsets
 CV_feats_concat = [];
