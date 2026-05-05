@@ -1,0 +1,156 @@
+---
+title: "Clinical validity check against KSADS"
+output: html_notebook
+---
+
+# Setup
+
+```{r}
+workdir <- '/path/to/workdir'
+
+```
+
+# Data
+```{r}
+#generate this file from Data_prep_networklevel.Rmd
+load(paste(workdir, '/main_networklevel.RData', sep="")
+
+```
+
+## Add in KSADS data
+```{r}
+# Load KSADS parent-reported questionnaire (includes diagnosis information for OCD)
+ksad01 <- read.table(paste(workdir, '/data/abcd_ksad01.txt', sep = ""), header = TRUE)
+
+# Load KSADS youth-reported questionnaire (includes symptom information for obsessions, compulsions)
+#ksad501 <- read.table(paste(workdir, '/data/abcd_ksad501.txt', sep = ""), header = TRUE)
+
+# double-check we are keeping the correct KSADS-parent items
+#diagnosis OCD (present), diagnosis OCD related but not meeting full criteria (present), and obsessive and compulsive symptoms and severity questions
+ksad01[1, c(265, 267, 269, 271, 273, 275, 279, 280, 281, 283, 285,  288, 289)] #to view column descriptions (OCS)
+ksad01[1, c(460, 461, 464)] #view column descriptions for tic symptoms
+ksad01[1, c(249, 250, 234:235, 347:350)] #view column descriptions for comorbidities (GAD, specific phobia, ADHD)
+# drop first line of text (variable descriptions)
+ksad01 <- ksad01[-1, ]
+subjectkey2 <- ksad01[ksad01$eventname == 'baseline_year_1_arm_1', c('subjectkey')]
+#ksad01 <- ksad01[ksad01$eventname == 'baseline_year_1_arm_1', c(265, 267, 269, 271, 273, 275, 279, 280, 281, 283, 285, 288, 289)]
+ksad01base <- ksad01[ksad01$eventname == 'baseline_year_1_arm_1', c(265, 267, 269, 271, 273, 275, 279, 280, 281, 283, 285, 288, 289, 460, 461, 464)] #including tics
+ksad012y <- ksad01[ksad01$eventname == '2_year_follow_up_y_arm_1', c(265, 267, 269, 271, 273, 275, 279, 280, 281, 283, 285, 288, 289, 460, 461, 464)] #including tics
+ksad01base_comorbid <- ksad01[ksad01$eventname == 'baseline_year_1_arm_1', c(265, 267, 269, 271, 273, 275, 279, 280, 281, 283, 285, 288, 289, 460, 461, 464, 249, 250, 234:235, 347:350)] #including tics and comorbidities
+
+#rename columns
+#names(ksad01) <- c('diagnosis-OCD','diagnosis-OCDrelated','compulsions-reduceanxiety','obsessive-unwanted','obsessions','obsessions-timeconsuming','compulsions-timeconsuming','compulsions','obsessions-distress','compulsions-distress','suppressthoughts','compulsions-impairment','obsessions-impairment')
+names(ksad01base) <- c('diagnosis-OCD','diagnosis-OCDrelated','compulsions-reduceanxiety','obsessive-unwanted','obsessions','obsessions-timeconsuming','compulsions-timeconsuming','compulsions','obsessions-distress','compulsions-distress','suppressthoughts','compulsions-impairment','obsessions-impairment','diagnosis-tic','tics-phonic','tics-motor') #including tics
+names(ksad01base_comorbid) <- c('diagnosis-OCD','diagnosis-OCDrelated','compulsions-reduceanxiety','obsessive-unwanted','obsessions','obsessions-timeconsuming','compulsions-timeconsuming','compulsions','obsessions-distress','compulsions-distress','suppressthoughts','compulsions-impairment','obsessions-impairment','diagnosis-tic','tics-phonic','tics-motor','GAD-present','GAD-past','specificphobia-past','specificphobia-present','ADHD-unspecified','ADHD-partialremission','ADHD-present','ADHD-past') #including tics and comorbidities
+class(ksad01base[1,1])
+#ksad01base[ ,1:13] <- apply(ksad01[ ,1:13], 2, function(x) as.numeric(as.character(x)))
+ksad01base$subjectkey <- subjectkey2
+ksad01base_comorbid$subjectkey <- subjectkey2
+
+# Use imaging QA participant list as a template, merge in other variables
+data_discovery <- merge(data_discovery, ksad01base_comorbid, by = 'subjectkey', all.x = TRUE)
+data_test <- merge(data_test, ksad01base_comorbid, by = 'subjectkey', all.x = TRUE)
+data_replication <- merge(data_replication, ksad01base_comorbid, by = 'subjectkey', all.x = TRUE)
+
+#visually check/confirm duplicates
+duplicates1 <- subset(data_discovery,duplicated(data_discovery$subjectkey))
+duplicates2 <- subset(data_discovery,duplicated(data_discovery$subjectkey, fromLast = TRUE))
+rm(duplicates1, duplicates2)
+
+```
+
+## Look at prevalence of OCD, comorbidities, head motion, etc. by subset
+```{r}
+table(data_discovery$`diagnosis-OCD`)
+data_discovery$`diagnosis-OCD`[data_discovery$`diagnosis-OCD`=='888'] <- NA #recode '888' values as NA
+table(data_test$`diagnosis-OCD`)
+data_test$`diagnosis-OCD`[data_test$`diagnosis-OCD`=='888'] <- NA #recode '888' values as NA
+table(data_replication$`diagnosis-OCD`)
+data_replication$`diagnosis-OCD`[data_replication$`diagnosis-OCD`=='888'] <- NA #recode '888' values as NA
+
+table(data_discovery$`GAD-present`)
+table(data_test$`GAD-present`)
+table(data_replication$`GAD-present`)
+
+#ADHD is blank in KSADS file
+table(data_discovery$`ADHD-present`)
+
+table(data_discovery$`specificphobia-present`)
+table(data_test$`specificphobia-present`)
+table(data_replication$`specificphobia-present`)
+
+
+#head motion
+mean(data_discovery$rsfmri_c_ngd_meanmotion)
+sd(data_discovery$rsfmri_c_ngd_meanmotion)
+mean(data_test$rsfmri_c_ngd_meanmotion)
+sd(data_test$rsfmri_c_ngd_meanmotion)
+mean(data_replication$rsfmri_c_ngd_meanmotion)
+sd(data_replication$rsfmri_c_ngd_meanmotion)
+
+```
+
+
+
+
+## Load enCCA variates from Python
+
+```{r}
+transformed_clin_U <- read.table(paste(workdir, '/FINAL/network-level/results/discovery_CV1_clin_u.csv', sep=""), header = FALSE, sep = ',')
+transformed_rsFC_V <- read.table(paste(workdir, '/FINAL/network-level/results/discovery_CV1_rsFC_v.csv', sep=""), header = FALSE, sep = ',')
+
+transformed_clin_U_test <- read.table(paste(workdir, '/FINAL/network-level/results/testimputed_CV1_clin_u.csv', sep=""), header = FALSE, sep = ',')
+transformed_rsFC_V_test <- read.table(paste(workdir, '/FINAL/network-level/results/testimputed_CV1_rsFC_v.csv', sep=""), header = FALSE, sep = ',')
+
+transformed_clin_U_replication <- read.table(paste(workdir, '/FINAL/network-level/results/replicationimputed_CV1_clin_u.csv', sep=""), header = FALSE, sep = ',')
+transformed_rsFC_V_replication <- read.table(paste(workdir, '/FINAL/network-level/results/replicationimputed_CV1_rsFC_v.csv', sep=""), header = FALSE, sep = ',')
+
+transformed_clin_U_replicationrefit <- read.table(paste(workdir, '/FINAL/network-level/results/replicationrefit_CV1_clin_u.csv', sep=""), header = FALSE, sep = ',')
+transformed_rsFC_V_replicationrefit <- read.table(paste(workdir, '/FINAL/network-level/results/replicationrefit_CV1_rsFC_v.csv', sep=""), header = FALSE, sep = ',')
+
+```
+
+# Compare enCCA variates to KSADS diagnoses/symptoms
+
+```{r}
+# head check: KSAD OCD diagnosis correlates with CBCL obsessions
+data_discovery$`diagnosis-OCD`[data_discovery$`diagnosis-OCD`=='888'] <- NA #recode '888' values as NA
+data_test$`diagnosis-OCD`[data_test$`diagnosis-OCD`=='888'] <- NA #recode '888' values as NA
+data_replication$`diagnosis-OCD`[data_replication$`diagnosis-OCD`=='888'] <- NA #recode '888' values as NA
+
+table(data_discovery$obsessions.x, as.numeric(as.character(data_discovery$`diagnosis-OCD`)))
+cor.test(data_discovery$obsessions.x, as.numeric(as.character(data_discovery$`diagnosis-OCD`)))
+
+# head check: KSAD (parent) obsessions symptom correlates with CBCL obsessions
+data_discovery$obsessions.y[data_discovery$obsessions.y=='888'] <- NA #recode '888' values as NA
+table(data_discovery$obsessions.x, as.numeric(as.character(data_discovery$obsessions.y)))
+cor.test(data_discovery$obsessions.x, as.numeric(as.character(data_discovery$obsessions.y)), method = 'spearman')
+
+library(ggplot2)
+# CV values versus OCD diagnoses (from parent KSADS)
+signflip <- -1
+t.test(transformed_rsFC_V[data_discovery$`diagnosis-OCD`==1,]*signflip, transformed_rsFC_V[data_discovery$`diagnosis-OCD`==0,]*signflip, var.equal = FALSE)
+sd(transformed_rsFC_V[data_discovery$`diagnosis-OCD`==1,]*signflip, na.rm = TRUE)
+sd(transformed_rsFC_V[data_discovery$`diagnosis-OCD`==0,]*signflip, na.rm = TRUE)
+#plot
+temp <- cbind(signflip*transformed_rsFC_V, data_discovery)
+temp <- temp[(temp$'diagnosis-OCD'==0 | temp$'diagnosis-OCD'==1),]
+temp$'diagnosis-OCD' <- droplevels(temp$'diagnosis-OCD')
+p <- ggplot(temp,aes(x=`diagnosis-OCD`,y=V3)) + geom_boxplot()
+p
+
+t.test(transformed_rsFC_V_test[data_test$`diagnosis-OCD`==1,]*signflip, transformed_rsFC_V_test[data_test$`diagnosis-OCD`==0,]*signflip, var.equal = FALSE)
+sd(transformed_rsFC_V_test[data_test$`diagnosis-OCD`==1,]*signflip, na.rm = TRUE)
+sd(transformed_rsFC_V_test[data_test$`diagnosis-OCD`==0,]*signflip, na.rm = TRUE)
+
+t.test(transformed_rsFC_V_replication[data_replication$`diagnosis-OCD`==1,]*signflip, transformed_rsFC_V_replication[data_replication$`diagnosis-OCD`==0,]*signflip, var.equal = FALSE)
+sd(transformed_rsFC_V_replication[data_replication$`diagnosis-OCD`==1,]*signflip, na.rm = TRUE)
+sd(transformed_rsFC_V_replication[data_replication$`diagnosis-OCD`==0,]*signflip, na.rm = TRUE)
+
+t.test(transformed_rsFC_V_replicationrefit[data_replication$`diagnosis-OCD`==1,]*signflip, transformed_rsFC_V_replicationrefit[data_replication$`diagnosis-OCD`==0,]*signflip, var.equal = FALSE)
+sd(transformed_rsFC_V_replicationrefit[data_replication$`diagnosis-OCD`==1,]*signflip, na.rm = TRUE)
+sd(transformed_rsFC_V_replicationrefit[data_replication$`diagnosis-OCD`==0,]*signflip, na.rm = TRUE)
+
+
+```
+

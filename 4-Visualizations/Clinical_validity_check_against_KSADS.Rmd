@@ -1,0 +1,252 @@
+---
+title: "Clinical validity check against KSADS"
+output: html_notebook
+---
+
+# Setup
+
+```{r}
+workdir <- '/path/to/workdir'
+=
+
+```
+
+# Data
+```{r}
+# Load ABCD release 4.0 file abcd_imgincl01.txt (imaging QA inclusion/exclusion)
+imgincl01 <- read.table(paste(workdir, '/data/abcd_imgincl01.txt', sep = ""), header = TRUE)
+# drop first line of text (variable descriptions)
+imgincl01 <- imgincl01[-1, ]
+
+# Load CBCL parent-reported questionnaire abcd_cbcl01.txt (used to calculate CBCL-OCS)
+cbcl01 <- read.table(paste(workdir, '/data/abcd_cbcl01.txt', sep = ""), header = TRUE)
+
+# Load KSADS parent-reported questionnaire (includes diagnosis information for OCD)
+ksad01 <- read.table(paste(workdir, '/data/abcd_ksad01.txt', sep = ""), header = TRUE)
+
+# Load KSADS youth-reported questionnaire (includes symptom information for obsessions, compulsions)
+ksad501 <- read.table(paste(workdir, '/data/abcd_ksad501.txt', sep = ""), header = TRUE)
+```
+
+## Concatenate useful variables across ABCD files
+```{r}
+# Extract subject IDs for participants flagged for inclusion of baseline rsfMRI by ABCD QA process
+abcd_incl <- imgincl01[imgincl01$eventname == 'baseline_year_1_arm_1', ]
+paste('participants with imaging data in ABCD baseline data release: ', nrow(abcd_incl))
+abcd_incl <- abcd_incl[abcd_incl$imgincl_rsfmri_include == 1, ]
+paste('participants with baseline rsfMRI data marked for inclusion based on ABCD QA: ', nrow(abcd_incl))
+
+# double-check we are keeping the correct CBCL-OCS items
+cbcl01[1, c(18,40,41,61,82,100,101,128)] #to view column descriptions
+# drop first line of text (variable descriptions)
+cbcl01 <- cbcl01[-1, ]
+subjectkey <- cbcl01[cbcl01$eventname == 'baseline_year_1_arm_1', c('subjectkey')]
+cbcl01 <- cbcl01[cbcl01$eventname == 'baseline_year_1_arm_1', c(18,40,41,61,82,100,101,128)]
+#rename columns
+names(cbcl01) <- c('obsessions','something_bad','perfect','guilty','compulsions','strange_behavior','strange_ideas','worries')
+#convert columns to numeric from factor
+cbcl01[ ,1:8] <- apply(cbcl01[ ,1:8], 2, function(x) as.numeric(as.character(x)))
+cbcl01$cbcl_ocs_score <- rowSums(cbcl01)
+cbcl01$subjectkey <- subjectkey
+
+# double-check we are keeping the correct KSADS-parent items
+#diagnosis OCD (present), diagnosis OCD related but not meeting full criteria (present), and obsessive and compulsive symptoms and severity questions
+ksad01[1, c(265, 267, 269, 271, 273, 275, 279, 280, 281, 283, 285,  288, 289)] #to view column descriptions (OCS)
+ksad01[1, c(460, 461, 464)] #view column descriptions for tic symptoms
+# drop first line of text (variable descriptions)
+ksad01 <- ksad01[-1, ]
+subjectkey2 <- ksad01[ksad01$eventname == 'baseline_year_1_arm_1', c('subjectkey')]
+#ksad01 <- ksad01[ksad01$eventname == 'baseline_year_1_arm_1', c(265, 267, 269, 271, 273, 275, 279, 280, 281, 283, 285, 288, 289)]
+ksad01base <- ksad01[ksad01$eventname == 'baseline_year_1_arm_1', c(265, 267, 269, 271, 273, 275, 279, 280, 281, 283, 285, 288, 289, 460, 461, 464)] #including tics
+ksad012y <- ksad01[ksad01$eventname == '2_year_follow_up_y_arm_1', c(265, 267, 269, 271, 273, 275, 279, 280, 281, 283, 285, 288, 289, 460, 461, 464)] #including tics
+#rename columns
+#names(ksad01) <- c('diagnosis-OCD','diagnosis-OCDrelated','compulsions-reduceanxiety','obsessive-unwanted','obsessions','obsessions-timeconsuming','compulsions-timeconsuming','compulsions','obsessions-distress','compulsions-distress','suppressthoughts','compulsions-impairment','obsessions-impairment')
+names(ksad01base) <- c('diagnosis-OCD','diagnosis-OCDrelated','compulsions-reduceanxiety','obsessive-unwanted','obsessions','obsessions-timeconsuming','compulsions-timeconsuming','compulsions','obsessions-distress','compulsions-distress','suppressthoughts','compulsions-impairment','obsessions-impairment','diagnosis-tic','tics-phonic','tics-motor') #including tics
+class(ksad01base[1,1])
+#ksad01base[ ,1:13] <- apply(ksad01[ ,1:13], 2, function(x) as.numeric(as.character(x)))
+ksad01base$subjectkey <- subjectkey2
+
+# Use imaging QA participant list as a template, merge in other variables
+data_abcd_ksad <- abcd_incl[ , c('subjectkey', 'imgincl_rsfmri_include')]
+data_abcd_ksad <- merge(data_abcd_ksad, cbcl01, by = 'subjectkey', all.x = TRUE)
+data_abcd_ksad <- merge(data_abcd_ksad, ksad01base, by = 'subjectkey', all.x = TRUE)
+
+#visually check/confirm duplicates
+duplicates1 <- subset(data_abcd_ksad,duplicated(data_abcd_ksad$subjectkey))
+duplicates2 <- subset(data_abcd_ksad,duplicated(data_abcd_ksad$subjectkey, fromLast = TRUE))
+rm(duplicates1, duplicates2)
+
+# double-check we are keeping the correct KSADS-youth items
+#diagnosis OCD (present), diagnosis OCD related but not meeting full criteria (present), and obsessive and compulsive symptoms and severity questions
+ksad501[1, c(53,55,51)] #to view column descriptions (OCS)
+#all coded as '555' so didn't extract tic symptoms
+# drop first line of text (variable descriptions)
+ksad501 <- ksad501[-1, ]
+subjectkey3 <- ksad501[ksad501$eventname == 'baseline_year_1_arm_1', c('subjectkey')]
+ksad501 <- ksad501[ksad501$eventname == 'baseline_year_1_arm_1', c(43,55,51)] #not including tics
+#rename columns
+names(ksad501) <- c('obsessions','compulsions','worries')
+class(ksad501[1,1])
+#ksad01[ ,1:13] <- apply(ksad01[ ,1:13], 2, function(x) as.numeric(as.character(x)))
+ksad501$subjectkey <- subjectkey3
+
+#merge in
+data_abcd_ksad <- merge(data_abcd_ksad, ksad501, by = 'subjectkey', all.x = TRUE)
+
+
+```
+
+```{r}
+#Reformat subjectkey to match DCAN participant ID formatting, add as new field 'participant_id'
+participant_id <- as.character(data_abcd_ksad$subjectkey)
+participant_id <- paste("sub-", participant_id, sep = "")
+participant_id <- sub("_", "", participant_id)
+participant_id <- as.data.frame(participant_id)
+data_abcd_ksad <- cbind(data_abcd_ksad, participant_id)
+rm(participant_id)
+
+#Divide into discovery and test sets, format, and save as a subject list for DCAN downloader
+#load participants.tsv from DCAN lab
+participants_dcan <- read.table(paste(workdir, '/scripts/nda-abcd-s3-downloader-master/Collection_Documents/participants_v1.0.0/participants.tsv', sep=""), header = TRUE)
+
+#keep only baseline data, participant ID and matched_group variables
+participants_dcan <- participants_dcan[participants_dcan$session_id == 'ses-baselineYear1Arm1', c('participant_id', 'matched_group','race_ethnicity','handedness')]
+
+subject_list_merged <- merge(data_abcd_ksad, participants_dcan, by = 'participant_id', all.x = TRUE)
+
+# 44 participants in the DCAN spreadsheet have 2 entries (rows)
+# each of these participants has 2 rows that are identical except for site (so each participant has 2 sites listed
+# [note: find out why...]
+# but none of these duplicates have contradictory matched_group assignments, so it doesn't affect this...
+#duplicates1 <- subset(subject_list_merged,duplicated(subject_list_merged$participant_id))
+#duplicates2 <- subset(subject_list_merged,duplicated(subject_list_merged$participant_id, fromLast = TRUE))
+#duplicates <- rbind(duplicates1, duplicates2)
+#rm(duplicates1, duplicates2, duplicates)
+# remove duplicates
+subject_list_merged <- subject_list_merged[!duplicated(subject_list_merged$participant_id), ]
+
+subject_list_discovery <- subject_list_merged[subject_list_merged$matched_group == 1, ]
+subject_list_discovery <- subject_list_discovery[!is.na(subject_list_discovery$participant_id), ] #remove rows with all NAs
+subject_list_replication <- subject_list_merged[subject_list_merged$matched_group == 2, ]
+subject_list_replication <- subject_list_replication[!is.na(subject_list_replication$participant_id), ] #remove rows with all NAs
+subject_list_test <- subject_list_merged[subject_list_merged$matched_group == 3, ]
+subject_list_test <- subject_list_test[!is.na(subject_list_test$participant_id), ] #remove rows with all NAs
+#write.table(subject_list_discovery[ , c("participant_id")], paste(workdir, '/scripts/nda-abcd-s3-downloader-master/subject_list_discovery.txt', sep = ""), quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+matlab_subject_list_discovery <- read.table(paste(workdir, '/data/subj_list_raw_discovery.txt', sep=""), header = TRUE, sep = ",")
+names(matlab_subject_list_discovery) = c('participant_id','matlab_include')
+matlab_subject_list_replication <- read.table(paste(workdir, '/data/subj_list_raw_replication.txt', sep=""), header = TRUE, sep = ",")
+names(matlab_subject_list_replication) = c('participant_id','matlab_include')
+matlab_subject_list_test <- read.table(paste(workdir, '/data/subj_list_raw_test.txt', sep=""), header = TRUE, sep = ",")
+names(matlab_subject_list_test) = c('participant_id','matlab_include')
+#merge with covariates and clinical data file
+data_discovery_ksad <- merge(matlab_subject_list_discovery, subject_list_discovery, by = 'participant_id', all = TRUE)
+data_discovery_ksad <- data_discovery_ksad[data_discovery_ksad$matlab_include==1,]
+data_replication_ksad <- merge(matlab_subject_list_replication, subject_list_replication, by = 'participant_id', all = TRUE)
+data_replication_ksad <- data_replication_ksad[data_replication_ksad$matlab_include==1,]
+data_test_ksad <- merge(matlab_subject_list_test, subject_list_test, by = 'participant_id', all = TRUE)
+data_test_ksad <- data_test_ksad[data_test_ksad$matlab_include==1,]
+
+#remove participants coded as 888 as it causes issue with covariate regression from clinical features
+class(data_discovery_ksad$race_ethnicity) #defaults to integer
+data_discovery_ksad$race_ethnicity <- as.factor(data_discovery_ksad$race_ethnicity)
+class(data_discovery_ksad$race_ethnicity) #confirm is factor now
+data_discovery_ksad$race_ethnicity[data_discovery_ksad$race_ethnicity=='888'] <- NA
+data_discovery_ksad$race_ethnicity <- droplevels(data_discovery_ksad$race_ethnicity)
+missingraceeth <- which(is.na(data_discovery_ksad$race_ethnicity))
+#covariates_discovery$race_ethnicity <- relevel(covariates_discovery$race_ethnicity, '888')
+levels(data_discovery_ksad$race_ethnicity)
+data_discovery_ksad <- data_discovery_ksad[c(-missingraceeth),]
+
+class(data_replication_ksad$race_ethnicity) #defaults to integer
+data_replication_ksad$race_ethnicity <- as.factor(data_replication_ksad$race_ethnicity)
+class(data_replication_ksad$race_ethnicity) #confirm is factor now
+data_replication_ksad$race_ethnicity[data_replication_ksad$race_ethnicity=='888'] <- NA
+data_replication_ksad$race_ethnicity <- droplevels(data_replication_ksad$race_ethnicity)
+missingraceeth <- which(is.na(data_replication_ksad$race_ethnicity))
+#covariates_discovery$race_ethnicity <- relevel(covariates_discovery$race_ethnicity, '888')
+levels(data_replication_ksad$race_ethnicity)
+data_replication_ksad <- data_replication_ksad[c(-missingraceeth),]
+
+```
+
+
+# Compare CBCL-OCS to KSADS diagnosis of OCD
+```{r}
+table(data_discovery_ksad$cbcl_ocs_score>=5, droplevels(data_discovery_ksad$`diagnosis-OCD`))
+table(data_replication_ksad$cbcl_ocs_score>=5, droplevels(data_replication_ksad$`diagnosis-OCD`))
+
+```
+
+
+
+## Load enCCA variates from Python
+
+```{r}
+transformed_clin_U <- read.table(paste(workdir, '/FINAL/discovery/results/elasticnetCCA_scaled/transformed_clin_U.csv', sep=""), header = FALSE, sep = ',')
+transformed_rsFC_V <- read.table(paste(workdir, '/FINAL/discovery/results/elasticnetCCA_scaled/transformed_rsFC_V.csv', sep=""), header = FALSE, sep = ',')
+
+transformed_clin_U_test <- read.table(paste(workdir, '/FINAL/test/results/elasticnetCCA_scaled/applied_transformed_clin_U.csv', sep=""), header = FALSE, sep = ',')
+transformed_rsFC_V_test <- read.table(paste(workdir, '/FINAL/test/results/elasticnetCCA_scaled/applied_transformed_rsFC_V.csv', sep=""), header = FALSE, sep = ',')
+
+transformed_clin_U_replication <- read.table(paste(workdir, '/FINAL/replication/results/elasticnetCCA_scaled/applied_transformed_clin_U.csv', sep=""), header = FALSE, sep = ',')
+transformed_rsFC_V_replication <- read.table(paste(workdir, '/FINAL/replication/results/elasticnetCCA_scaled/applied_transformed_rsFC_V.csv', sep=""), header = FALSE, sep = ',')
+
+transformed_clin_U_replicationrefitA <- read.table(paste(workdir, '/FINAL/replication/results/elasticnetCCA_scaled/discovery-selected-features/transformed_clin_U.csv', sep=""), header = FALSE, sep = ',')
+transformed_rsFC_V_replicationrefitA <- read.table(paste(workdir, '/FINAL/replication/results/elasticnetCCA_scaled/discovery-selected-features/transformed_rsFC_V.csv', sep=""), header = FALSE, sep = ',')
+
+transformed_clin_U_replicationrefitB <- read.table(paste(workdir, '/FINAL/replication/results/elasticnetCCA_scaled/replication-selected-features/transformed_clin_U.csv', sep=""), header = FALSE, sep = ',')
+transformed_rsFC_V_replicationrefitB <- read.table(paste(workdir, '/FINAL/replication/results/elasticnetCCA_scaled/replication-selected-features/transformed_rsFC_V.csv', sep=""), header = FALSE, sep = ',')
+
+```
+
+# Compare enCCA variates to KSADS diagnoses/symptoms
+
+```{r}
+# head check: KSAD OCD diagnosis correlates with CBCL obsessions
+data_discovery_ksad$`diagnosis-OCD`[data_discovery_ksad$`diagnosis-OCD`=='888'] <- NA #recode '888' values as NA
+table(data_discovery_ksad$obsessions.x, as.numeric(as.character(data_discovery_ksad$`diagnosis-OCD`)))
+cor.test(data_discovery_ksad$obsessions.x, as.numeric(as.character(data_discovery_ksad$`diagnosis-OCD`)))
+
+# head check: KSAD (parent) obsessions symptom correlates with CBCL obsessions
+data_discovery_ksad$obsessions.y[data_discovery_ksad$obsessions.y=='888'] <- NA #recode '888' values as NA
+table(data_discovery_ksad$obsessions.x, as.numeric(as.character(data_discovery_ksad$obsessions.y)))
+cor.test(data_discovery_ksad$obsessions.x, as.numeric(as.character(data_discovery_ksad$obsessions.y)), method = 'spearman')
+
+library(ggplot2)
+# CV values versus OCD diagnoses (from parent KSADS)
+i <- 1
+signflip <- -1
+t.test(transformed_rsFC_V[data_discovery_ksad$`diagnosis-OCD`==1,i]*signflip, transformed_rsFC_V[data_discovery_ksad$`diagnosis-OCD`==0,i]*signflip, var.equal = FALSE)
+sd(transformed_rsFC_V[data_discovery_ksad$`diagnosis-OCD`==1,i]*signflip, na.rm = TRUE)
+sd(transformed_rsFC_V[data_discovery_ksad$`diagnosis-OCD`==0,i]*signflip, na.rm = TRUE)
+
+#test imputed
+i <- 1
+signflip <- -1
+t.test(transformed_rsFC_V_test[data_test_ksad$`diagnosis-OCD`==1,i]*signflip, transformed_rsFC_V_test[data_test_ksad$`diagnosis-OCD`==0,i]*signflip, var.equal = FALSE)
+sd(transformed_rsFC_V_test[data_test_ksad$`diagnosis-OCD`==1,i]*signflip, na.rm = TRUE)
+sd(transformed_rsFC_V_test[data_test_ksad$`diagnosis-OCD`==0,i]*signflip, na.rm = TRUE)
+
+#replication imputed
+i <- 1
+signflip <- -1
+t.test(transformed_rsFC_V_replication[data_replication_ksad$`diagnosis-OCD`==1,i]*signflip, transformed_rsFC_V_replication[data_replication_ksad$`diagnosis-OCD`==0,i]*signflip, var.equal = FALSE)
+sd(transformed_rsFC_V_replication[data_replication_ksad$`diagnosis-OCD`==1,i]*signflip, na.rm = TRUE)
+sd(transformed_rsFC_V_replication[data_replication_ksad$`diagnosis-OCD`==0,i]*signflip, na.rm = TRUE)
+
+#replication refit method A
+i <- 1
+signflip <- -1
+t.test(transformed_rsFC_V_replicationrefitA[data_replication_ksad$`diagnosis-OCD`==1,i]*signflip, transformed_rsFC_V_replicationrefitA[data_replication_ksad$`diagnosis-OCD`==0,i]*signflip, var.equal = FALSE)
+sd(transformed_rsFC_V_replicationrefitA[data_replication_ksad$`diagnosis-OCD`==1,i]*signflip, na.rm = TRUE)
+sd(transformed_rsFC_V_replicationrefitA[data_replication_ksad$`diagnosis-OCD`==0,i]*signflip, na.rm = TRUE)
+
+
+#replication refit method B
+i <- 1
+signflip <- -1
+t.test(transformed_rsFC_V_replicationrefitB[data_replication_ksad$`diagnosis-OCD`==1,i]*signflip, transformed_rsFC_V_replicationrefitB[data_replication_ksad$`diagnosis-OCD`==0,i]*signflip, var.equal = FALSE)
+sd(transformed_rsFC_V_replicationrefitB[data_replication_ksad$`diagnosis-OCD`==1,i]*signflip, na.rm = TRUE)
+sd(transformed_rsFC_V_replicationrefitB[data_replication_ksad$`diagnosis-OCD`==0,i]*signflip, na.rm = TRUE)
+```
